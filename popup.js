@@ -158,7 +158,7 @@ qStart.addEventListener('click', async () => {
   saveOpts();
   qStart.disabled = true;
   try {
-    const r = await chrome.tabs.sendMessage(tabId, { type: 'startQueue', opts: { panels: qPanels.checked, delayMs: Number(qDelay.value) || 500, batchSize: Number(qBatch.value) || 1, retryNotFound: !pend } });
+    const r = await chrome.tabs.sendMessage(tabId, { type: 'startQueue', opts: { panels: qPanels.checked, delayMs: Number(qDelay.value) || 500, batchSize: Math.min(30, Math.max(1, Number(qBatch.value) || 1)), retryNotFound: !pend } });
     if (!r || !r.ok) throw new Error('no reply');
     setStatus(qstatus, 'Starting…');
   } catch (e) {

@@ -41,7 +41,7 @@
       if (p.resB64) { while (caps.length > 1 && JSON.stringify(caps).length > 12e6) caps.shift(); }
       chrome.storage.local.set({ captures: caps });
     });
-    dbg('capture ' + p.url + ' ' + (p.resBytes || 0) + ' bytes' + (p.error ? ' ERROR ' + p.error : ''));
+    if (p.error && /aborted/i.test(p.error)) abortedSeen++; else dbg('capture ' + p.url + ' ' + (p.resBytes || 0) + ' bytes' + (p.error ? ' ERROR ' + p.error : ''));
   });
 
   // ---- decoded contacts from the page's own search responses (main-world.js) -------
@@ -64,7 +64,8 @@
   });
   let responsesSeen = 0;
   // rate limit: set by the fetch hook (429 / grpc message) or by FullEnrich's toast; the batch loop waits and retries
-  let rateLimitHits = 0, rateLimitedAt = 0, chipGap = 90;
+  let rateLimitHits = 0, rateLimitedAt = 0, chipGap = 700, cleanBatches = 0, abortedSeen = 0;
+  const GAP_MIN = 400, GAP_MAX = 2000;
   const noteRateLimit = (src) => { rateLimitHits++; rateLimitedAt = Date.now(); dbg('RATE LIMIT (' + src + '), hit #' + rateLimitHits); setPhase('FullEnrich rate limit (hit ' + rateLimitHits + ')'); };
   document.addEventListener('feexport:ratelimit', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { p = {}; } noteRateLimit('response ' + (p.status || '') + ' ' + (p.message || '')); });
   new MutationObserver((muts) => {
@@ -381,14 +382,34 @@
   };
   const clearChips = async (root) => {
     let removed = 0;
-    for (let i = 0; i < 80; i++) {
-      const xs = Array.from(root.querySelectorAll('button.close-chip-icon, button[aria-label^="Remove "]')).filter(isVisible);
-      if (!xs.length) break;
-      xs.forEach((x) => { x.click(); removed++; });
-      await sleep(40);
+    for (let i = 0; i < 200; i++) {
+      const x = Array.from(root.querySelectorAll('button.close-chip-icon, button[aria-label^="Remove "]')).filter(isVisible)[0];
+      if (!x) break;
+      await paceRequest();
+      x.click(); removed++; lastRequestAt = Date.now();
+      await sleep(60);
     }
-    if (removed) { dbg('removed ' + removed + ' chip(s)'); await sleep(120); }
+    if (removed) { dbg('removed ' + removed + ' chip(s) one by one'); await sleep(120); }
     return removed;
+  };
+  const filtersCount = () => { const t = Array.from(document.querySelectorAll('span, div, button')).map(txt).find((x) => /^\d+ filters?$/i.test(x)); return t ? parseInt(t, 10) : 0; };
+  const ourChipCount = () => ['Person Name', 'Company Name'].reduce((n, l) => { const b = filterButton(l); return n + (b ? chipCount(filterRoot(b)) : 0); }, 0);
+  // all chips at once: the "Clear" button next to "N FILTERS" is a single request. Used only when every active filter is ours.
+  const clearAllFilters = async () => {
+    const ours = ourChipCount();
+    if (!ours) return 0;
+    const total = filtersCount();
+    const btn = Array.from(document.querySelectorAll('button')).filter((b) => isVisible(b) && /^clear$/i.test(txt(b))).sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0];
+    if (btn && total && total === ours) {
+      await paceRequest();
+      btn.click(); lastRequestAt = Date.now();
+      const gone = await waitFor(() => ourChipCount() === 0, 3000, 100);
+      if (gone) { dbg('cleared ' + ours + ' chip(s) with the Clear button'); await sleep(150); return ours; }
+      dbg('Clear button did not clear, falling back to one by one');
+    } else if (!btn) dumpOnce('clearbtn', document.querySelector('aside') || document.body, 'no Clear button (filters ' + total + ', ours ' + ours + ')');
+    let n = 0;
+    for (const l of ['Person Name', 'Company Name']) n += await clearFilter(l);
+    return n;
   };
   const setNative = (input, value) => {
     input.focus();
@@ -407,8 +428,12 @@
     const items = Array.from(panel.querySelectorAll('li, button, label, [role="option"], div')).filter((e) => isVisible(e) && e.children.length <= 3 && !e.querySelector('input') && normName(txt(e)) && normName(txt(e)).includes(key));
     return items.sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0] || null;
   };
+  let lastRequestAt = 0;
+  // keep ~one filter request per chipGap ms (adds and removes both count on the server)
+  const paceRequest = async () => { const wait = chipGap - (Date.now() - lastRequestAt); if (wait > 0) await sleep(wait); };
   const addChip = async (label, value) => {
     const t0 = Date.now();
+    await paceRequest();
     const f = await openFilter(label);
     chipStats.open += Date.now() - t0;
     if (!f || !f.input) return { ok: false, reason: 'filter "' + label + '" not usable' };
@@ -417,8 +442,9 @@
     setNative(f.input, '');
     await sleep(30);
     setNative(f.input, value);
-    await sleep(chipGap);
+    await sleep(80);
     pressEnter(f.input);
+    lastRequestAt = Date.now();
     let how = 'enter';
     // the chip normally shows at once; if the app offers its suggestion list instead, click the entry as soon as it appears
     let got = await waitFor(() => (hasChip() ? 'chip' : (suggestionFor(f.panel, value) ? 'suggest' : null)), 1500, 100);
@@ -538,15 +564,29 @@
     if (!items.length) { dbg('batch: all ' + pre.length + ' already decoded'); return pre.length; }
     const sig = tableSignature();
     chipStats = { n: 0, ms: 0, enter: 0, suggest: 0, fail: 0, open: 0 };
+    let hitsAtStart = rateLimitHits;
     const tB = Date.now(); const rB = responsesSeen;
-    await clearFilter('Person Name');
-    await clearFilter('Company Name');
+    await clearAllFilters();
+    if (!pageSizeSet && rowEls().length) await setPageSize(200);
     const tClear = Date.now() - tB;
     let added = 0;
     for (let k = 0; k < items.length && !cancelled; k++) { const it = items[k]; setPhase((opts._label || 'Batch') + ' · names ' + (k + 1) + '/' + items.length); const r = await addChip('Person Name', it.name); if (r.ok) added++; else dbg('batch: name chip failed for ' + it.name); }
     setPhase((opts._label || 'Batch') + ' · waiting for results');
     const tChips = Date.now() - tB - tClear; const rChips = responsesSeen - rB;
     await waitTable(sig);
+    // the final search itself may have been the one that got limited: wait, then nudge one chip to re-run it (2 requests, not 40)
+    for (let n = 0; n < 2 && !cancelled && rateLimitHits > hitsAtStart && !rowEls().some((tr) => readRow(tr).linkedinUrl); n++) {
+      hitsAtStart = rateLimitHits;
+      await pause(15000 + 15000 * n, 'Rate limited, waiting');
+      const last = items[items.length - 1];
+      const f = await openFilter('Person Name');
+      const x = f && Array.from(f.root.querySelectorAll('button[aria-label="Remove ' + last.name.replace(/"/g, '') + '"]')).filter(isVisible)[0];
+      const sig3 = tableSignature();
+      if (x) { await paceRequest(); x.click(); lastRequestAt = Date.now(); await sleep(400); }
+      await addChip('Person Name', last.name);
+      await waitTable(sig3);
+      dbg('re-ran the batch search after a rate limit (try ' + (n + 1) + ')');
+    }
     const tWait = Date.now() - tB - tClear - tChips;
     // company chips only when the name search returned more than one page (otherwise every match is already here)
     const total = totalCount();
@@ -592,9 +632,11 @@
         for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
           const hitsBefore = rateLimitHits;
           try { await runBatch(items, Object.assign({}, opts, { _label: label })); } catch (e) { dbg('batch error: ' + (e && e.message)); setPhase(label + ' · error: ' + (e && e.message)); }
-          if (rateLimitHits === hitsBefore) break;
-          // FullEnrich limited this batch: wait it out, type chips slower from now on, then redo the people still open
-          chipGap = Math.min(chipGap + 150, 600);
+          if (rateLimitHits === hitsBefore) { cleanBatches++; if (cleanBatches >= 4 && chipGap > GAP_MIN) { chipGap = Math.max(GAP_MIN, chipGap - 100); cleanBatches = 0; dbg('4 clean batches: chip gap down to ' + chipGap + ' ms'); } break; }
+          if (items.every((it) => it.status === 'done' || contactFor(it.linkedinUrl))) break; // limited, but the nudge recovered it
+          // FullEnrich limited this batch and the nudge did not recover it: slow down and redo the people still open
+          cleanBatches = 0;
+          chipGap = Math.min(chipGap + 300, GAP_MAX);
           const wait = 20000 + 25000 * attempt;
           dbg('rate limited during batch: waiting ' + wait / 1000 + ' s, chip gap now ' + chipGap + ' ms, attempt ' + (attempt + 2));
           await pause(wait, 'Rate limited, waiting');
