@@ -57,8 +57,10 @@
       contactsSeen++;
     }
     if (contactsBySlug.size > 3000) { const keys = Array.from(contactsBySlug.keys()).slice(0, 1000); keys.forEach((k) => contactsBySlug.delete(k)); }
+    responsesSeen++;
     if (p.errors) dbg('search response: ' + p.errors + ' frame(s) failed to decode');
   });
+  let responsesSeen = 0;
   const contactFor = (url) => { const k = slugKey(url).toLowerCase(); return k ? contactsBySlug.get(k) || null : null; };
   const profileFromContact = (c, row) => Object.assign({}, c, {
     description: c.description || '',
@@ -361,22 +363,35 @@
   };
   const pressEnter = (input) => { for (const type of ['keydown', 'keypress', 'keyup']) input.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })); };
   // Adds one chip to a filter: type, Enter; if no chip appeared, click the first suggestion in the panel list that matches.
+  // per-batch chip timing: how long each chip took and which path added it (Enter, or a click on the suggestion list)
+  let chipStats = { n: 0, ms: 0, enter: 0, suggest: 0, fail: 0, open: 0 };
+  const chipStatsLine = () => chipStats.n ? (Math.round(chipStats.ms / chipStats.n) + ' ms/chip (enter ' + chipStats.enter + ', suggest ' + chipStats.suggest + ', fail ' + chipStats.fail + ', open ' + chipStats.open + ' ms)') : 'no chips';
+  const suggestionFor = (panel, value) => {
+    const key = normName(value).slice(0, 12);
+    const items = Array.from(panel.querySelectorAll('li, button, label, [role="option"], div')).filter((e) => isVisible(e) && e.children.length <= 3 && !e.querySelector('input') && normName(txt(e)) && normName(txt(e)).includes(key));
+    return items.sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0] || null;
+  };
   const addChip = async (label, value) => {
+    const t0 = Date.now();
     const f = await openFilter(label);
+    chipStats.open += Date.now() - t0;
     if (!f || !f.input) return { ok: false, reason: 'filter "' + label + '" not usable' };
     const before = chipsOf(f.root).length;
+    const hasChip = () => chipsOf(f.root).length > before;
     setNative(f.input, '');
     await sleep(30);
     setNative(f.input, value);
-    await sleep(true ? 90 : 160);
+    await sleep(90);
     pressEnter(f.input);
-    let got = await waitFor(() => chipsOf(f.root).length > before, 1500, 100);
-    if (!got) {
-      const items = Array.from(f.panel.querySelectorAll('li, button, label, [role="option"], div')).filter((e) => isVisible(e) && e.children.length <= 3 && normName(txt(e)) && normName(txt(e)).includes(normName(value).slice(0, 12)));
-      const pick = items.sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0];
-      if (pick) { pick.click(); got = await waitFor(() => chipsOf(f.root).length > before, 1500, 100); }
-      if (!got) dumpOnce('nochip:' + label, f.root, 'typed "' + value + '", no chip appeared');
+    let how = 'enter';
+    // the chip normally shows at once; if the app offers its suggestion list instead, click the entry as soon as it appears
+    let got = await waitFor(() => (hasChip() ? 'chip' : (suggestionFor(f.panel, value) ? 'suggest' : null)), 1500, 100);
+    if (got === 'suggest') {
+      got = await waitFor(hasChip, 250, 50);
+      if (!got) { const pick = suggestionFor(f.panel, value); if (pick) { pick.click(); how = 'suggest'; got = await waitFor(hasChip, 1500, 100); } }
     }
+    if (!got) dumpOnce('nochip:' + label, f.root, 'typed "' + value + '", no chip appeared');
+    chipStats.n++; chipStats.ms += Date.now() - t0; if (got) chipStats[how]++; else chipStats.fail++;
     return { ok: !!got, chips: chipsOf(f.root) };
   };
   const tableSignature = () => rowEls().slice(0, 3).map((tr) => readRow(tr).linkedinUrl || txt(tr).slice(0, 40)).join('|') + '#' + rowEls().length + '#' + counterText();
@@ -479,11 +494,16 @@
     items = items.filter((it) => it.status !== 'done');
     if (!items.length) { dbg('batch: all ' + pre.length + ' already decoded'); return pre.length; }
     const sig = tableSignature();
+    chipStats = { n: 0, ms: 0, enter: 0, suggest: 0, fail: 0, open: 0 };
+    const tB = Date.now(); const rB = responsesSeen;
     await clearFilter('Person Name');
     await clearFilter('Company Name');
+    const tClear = Date.now() - tB;
     let added = 0;
     for (const it of items) { const r = await addChip('Person Name', it.name); if (r.ok) added++; else dbg('batch: name chip failed for ' + it.name); }
+    const tChips = Date.now() - tB - tClear; const rChips = responsesSeen - rB;
     await waitTable(sig);
+    const tWait = Date.now() - tB - tClear - tChips;
     // company chips only when the name search returned more than one page (otherwise every match is already here)
     const total = totalCount();
     const companies = Array.from(new Set(items.map((i) => i.company).filter(Boolean)));
@@ -503,7 +523,7 @@
       const hit = bySlug.get(slugOf(it.linkedinUrl)) || null;
       if (finishItem(it, hit ? { hit, matchedBy: 'batch' } : null, 'batch')) { matched++; it.ms = 0; }
     }
-    dbg('batch of ' + items.length + ': ' + added + ' name chips, ' + coAdded + '/' + companies.length + ' company chips, total ' + total + ', ' + rowEls().length + ' rows, matched ' + matched + (pre.length ? ', ' + pre.length + ' cached' : ''));
+    dbg('batch of ' + items.length + ': ' + added + ' name chips, ' + coAdded + '/' + companies.length + ' company chips, total ' + total + ', ' + rowEls().length + ' rows, matched ' + matched + (pre.length ? ', ' + pre.length + ' cached' : '') + ' | clear ' + tClear + ' ms, chips ' + tChips + ' ms (' + chipStatsLine() + ', ' + rChips + ' searches fired), table wait ' + tWait + ' ms, total ' + (Date.now() - tB) + ' ms, ' + (responsesSeen - rB) + ' responses');
     return matched + pre.length;
   };
 
