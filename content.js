@@ -33,10 +33,12 @@
   // ---- captures from main-world.js -------------------------------------------------
   document.addEventListener('feexport:capture', (ev) => {
     let p = null; try { p = JSON.parse(ev.detail); } catch (e) { return; }
+    if (queueRunning) { delete p.reqB64; delete p.resB64; p.rawSkipped = 'list running'; }
     chrome.storage.local.get({ captures: [] }, (st) => {
       const caps = st.captures || [];
       caps.push(p);
-      while (caps.length > 3 || JSON.stringify(caps).length > 12e6) caps.shift();
+      while (caps.length > 3) caps.shift();
+      if (p.resB64) { while (caps.length > 1 && JSON.stringify(caps).length > 12e6) caps.shift(); }
       chrome.storage.local.set({ captures: caps });
     });
     dbg('capture ' + p.url + ' ' + (p.resBytes || 0) + ' bytes' + (p.error ? ' ERROR ' + p.error : ''));
@@ -63,7 +65,7 @@
   let responsesSeen = 0;
   // rate limit: set by the fetch hook (429 / grpc message) or by FullEnrich's toast; the batch loop waits and retries
   let rateLimitHits = 0, rateLimitedAt = 0, chipGap = 90;
-  const noteRateLimit = (src) => { rateLimitHits++; rateLimitedAt = Date.now(); dbg('RATE LIMIT (' + src + '), hit #' + rateLimitHits); };
+  const noteRateLimit = (src) => { rateLimitHits++; rateLimitedAt = Date.now(); dbg('RATE LIMIT (' + src + '), hit #' + rateLimitHits); setPhase('FullEnrich rate limit (hit ' + rateLimitHits + ')'); };
   document.addEventListener('feexport:ratelimit', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { p = {}; } noteRateLimit('response ' + (p.status || '') + ' ' + (p.message || '')); });
   new MutationObserver((muts) => {
     for (const m of muts) for (const n of m.addedNodes) {
@@ -88,7 +90,26 @@
     try { chrome.runtime.sendMessage({ type: 'sleep', ms }, () => { void chrome.runtime.lastError; finish(); }); } catch (e) { finish(); }
     setTimeout(finish, ms + 1500); // page-timer fallback in case the worker is unavailable
   });
-  const sleep = (ms) => (ms >= 200 ? bgSleep(ms) : new Promise((r) => setTimeout(r, ms)));
+  const sleep = async (ms) => {
+    if (ms < 200) return new Promise((r) => setTimeout(r, ms));
+    while (ms > 0) { const part = Math.min(ms, 20000); await bgSleep(part); ms -= part; }
+  };
+  // a long wait that stops early when the user presses Pause and keeps the popup informed
+  const pause = async (ms, label) => {
+    const t0 = Date.now();
+    while (!cancelled && Date.now() - t0 < ms) {
+      const left = Math.ceil((ms - (Date.now() - t0)) / 1000);
+      if (label) setPhase(label + ' · ' + left + ' s');
+      await sleep(Math.min(1000, ms - (Date.now() - t0)));
+    }
+  };
+  // live status for the popup: small record, written at most twice a second (the full queue is big and is saved per batch)
+  let phaseTimer = null, phaseLast = '';
+  const setPhase = (text) => {
+    phaseLast = text;
+    if (phaseTimer) return;
+    phaseTimer = setTimeout(() => { phaseTimer = null; try { chrome.storage.local.set({ queueStatus: { phase: phaseLast, at: Date.now(), rateLimitHits, chipGap } }); } catch (e) { /* ignore */ } }, 400);
+  };
   const txt = (el) => (el ? String(el.textContent || '').replace(/\s+/g, ' ').trim() : '');
   const attrTitle = (el) => (el ? String(el.getAttribute('title') || '').trim() : '');
   const normUrl = (u) => String(u || '').toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/[?#].*$/, '').replace(/\/+$/, '');
@@ -522,7 +543,8 @@
     await clearFilter('Company Name');
     const tClear = Date.now() - tB;
     let added = 0;
-    for (const it of items) { const r = await addChip('Person Name', it.name); if (r.ok) added++; else dbg('batch: name chip failed for ' + it.name); }
+    for (let k = 0; k < items.length && !cancelled; k++) { const it = items[k]; setPhase((opts._label || 'Batch') + ' · names ' + (k + 1) + '/' + items.length); const r = await addChip('Person Name', it.name); if (r.ok) added++; else dbg('batch: name chip failed for ' + it.name); }
+    setPhase((opts._label || 'Batch') + ' · waiting for results');
     const tChips = Date.now() - tB - tClear; const rChips = responsesSeen - rB;
     await waitTable(sig);
     const tWait = Date.now() - tB - tClear - tChips;
@@ -533,7 +555,7 @@
     const missingBefore = items.filter((it) => !contactFor(it.linkedinUrl)).length;
     if (missingBefore && (total === null || total > (pageSizeSet ? PAGE : 50)) && companies.length) {
       const sig2 = tableSignature();
-      for (const co of companies) { const r = await addChip('Company Name', co); if (r.ok) coAdded++; }
+      for (let k = 0; k < companies.length && !cancelled; k++) { setPhase((opts._label || 'Batch') + ' · companies ' + (k + 1) + '/' + companies.length); const r = await addChip('Company Name', companies[k]); if (r.ok) coAdded++; }
       await waitTable(sig2);
     }
     await sleep(300);
@@ -555,6 +577,7 @@
     const q = await loadQueue();
     if (!q || !q.items) { queueRunning = false; return; }
     q.state = 'running'; q.startedAt = q.startedAt || new Date().toISOString(); await saveQueue(q);
+    setPhase('Starting');
     const todo = (it) => opts._onlyErrors ? it.status === 'error' : (it.status === 'pending' || (opts.retryNotFound && (it.status === 'not_found' || it.status === 'error')));
     dbg('queue start: ' + q.items.length + ' items, to do ' + q.items.filter(todo).length + ', batch size ' + (opts.batchSize || 0));
     const batchSize = Math.max(0, Number(opts.batchSize) || 0);
@@ -565,21 +588,24 @@
       for (let i = 0; i < pend.length && !cancelled; i += batchSize) {
         const items = pend.slice(i, i + batchSize);
         const t0 = Date.now();
+        const label = 'Batch ' + (Math.floor(i / batchSize) + 1) + '/' + Math.ceil(pend.length / batchSize);
         for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
           const hitsBefore = rateLimitHits;
-          try { await runBatch(items, opts); } catch (e) { dbg('batch error: ' + (e && e.message)); }
+          try { await runBatch(items, Object.assign({}, opts, { _label: label })); } catch (e) { dbg('batch error: ' + (e && e.message)); setPhase(label + ' · error: ' + (e && e.message)); }
           if (rateLimitHits === hitsBefore) break;
           // FullEnrich limited this batch: wait it out, type chips slower from now on, then redo the people still open
           chipGap = Math.min(chipGap + 150, 600);
-          const wait = 30000 + 30000 * attempt;
+          const wait = 20000 + 25000 * attempt;
           dbg('rate limited during batch: waiting ' + wait / 1000 + ' s, chip gap now ' + chipGap + ' ms, attempt ' + (attempt + 2));
-          await sleep(wait);
+          await pause(wait, 'Rate limited, waiting');
           items.forEach((it) => { if (it.status !== 'done') { it.status = 'pending'; it.note = ''; } });
         }
+        setPhase(label + ' · done, ' + items.filter((it) => it.status === 'done').length + '/' + items.length + ' found');
         const ms = Date.now() - t0; items.forEach((it) => { if (it.status === 'done' && !it.ms) it.ms = Math.round(ms / items.length); });
         q.cursor = Math.min(q.items.length, q.items.indexOf(items[items.length - 1]) + 1); q.updatedAt = new Date().toISOString();
         await saveQueue(q);
-        await sleep(opts.delayMs || 500);
+        // after repeated limits, leave more room between batches as well
+        await pause(Math.max(opts.delayMs || 500, rateLimitHits >= 2 ? 3000 : 0), null);
       }
     }
     // pass 2: one by one for everything still open (name + company, then name only)
@@ -587,8 +613,16 @@
       const it = q.items[idx];
       if (!todo(it)) continue;
       const t0 = Date.now();
+      const hitsBefore = rateLimitHits;
+      setPhase('One by one · ' + it.name);
       try {
         const s = await searchCandidate(it);
+        if (rateLimitHits > hitsBefore && !it._rl) {
+          it._rl = true; it.status = 'pending'; it.note = '';
+          dbg('rate limited while searching ' + it.name + ': waiting, then retrying once');
+          await pause(20000, 'Rate limited, waiting');
+          idx--; continue;
+        }
         if (!s.ok) { it.status = 'error'; it.note = s.reason; }
         else {
           const f = s.found;
@@ -614,6 +648,7 @@
     }
     q.state = cancelled ? 'paused' : 'finished';
     await saveQueue(q);
+    setPhase(q.state === 'finished' ? 'Finished' : 'Paused');
     dbg('queue ' + q.state + ': done ' + q.items.filter((i) => i.status === 'done').length + ', not found ' + q.items.filter((i) => i.status === 'not_found').length + ', error ' + q.items.filter((i) => i.status === 'error').length);
     queueRunning = false;
   };

@@ -108,8 +108,8 @@ async function refreshCaptures() {
 }
 
 async function refreshQueue() {
-  const st = await chrome.storage.local.get({ queue: null });
-  const q = st.queue;
+  const st = await chrome.storage.local.get({ queue: null, queueStatus: null });
+  const q = st.queue, qs = st.queueStatus;
   // stale 'running' (tab reloaded, content script says nothing runs): treat as paused so Resume is enabled
   if (q && q.items && q.state === 'running' && onSearchPage && !queueLive) { q.state = 'paused'; q.note = 'page reloaded'; await chrome.storage.local.set({ queue: q }); }
   if (!q || !q.items) { setStatus(qstatus, 'No list'); if (fileNameEl) fileNameEl.textContent = 'No file'; qbar.style.width = '0%'; qStart.disabled = true; qPause.disabled = true; qExport.disabled = true; qClear.disabled = true; return; }
@@ -119,7 +119,14 @@ async function refreshQueue() {
   const doneItems = q.items.filter((i) => i.status !== 'pending' && i.ms);
   const avg = doneItems.length ? doneItems.reduce((a, i) => a + (i.ms || 0), 0) / doneItems.length : 0;
   const eta = q.state === 'running' && pend && avg ? ' · ~' + Math.max(1, Math.round((pend * (avg + 500)) / 60000)) + ' min' : '';
-  const cur = q.state === 'running' && q.cursor < n ? '\n' + ((q.items[q.cursor] || {}).name || '') : '';
+  // live phase from the content script; if it has not moved for a while, say so instead of looking frozen
+  let cur = '';
+  if (q.state === 'running') {
+    const age = qs && qs.at ? Math.round((Date.now() - qs.at) / 1000) : null;
+    if (qs && qs.phase && age !== null && age > 120) cur = '\nNo progress for ' + Math.round(age / 60) + ' min. Reload the FullEnrich tab, then press Resume.';
+    else if (qs && qs.phase) cur = '\n' + qs.phase + (qs.rateLimitHits ? ' · limits ' + qs.rateLimitHits : '');
+    else cur = q.cursor < n ? '\n' + ((q.items[q.cursor] || {}).name || '') : '';
+  }
   setStatus(qstatus, done + ' found · ' + (nf - err) + ' missing' + (err ? ' · ' + err + ' errors' : '') + (pend ? ' · ' + pend + ' left' : '') + ' / ' + n + (q.state === 'finished' ? ' · done' : (q.state === 'paused' ? ' · paused' : '')) + eta + cur, q.state === 'finished' ? 'success' : '');
   qStart.lastChild.textContent = pend === n ? 'Start' : (pend ? 'Resume' : (nf ? 'Retry' : 'Start'));
   qStart.disabled = !onSearchPage || q.state === 'running' || (!pend && !nf);
@@ -167,7 +174,7 @@ qExport.addEventListener('click', async () => { const st = await chrome.storage.
 qClear.addEventListener('click', async () => { await chrome.storage.local.remove('queue'); csvFile.value = ''; if (fileNameEl) fileNameEl.textContent = 'No file'; refreshQueue(); });
 
 chrome.runtime.onMessage.addListener((m) => { if (m && m.scope === 'feexport' && m.type === 'progress') setStatus(statusEl, 'Reading… ' + m.count + ' · page ' + m.page); });
-chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && ch.queue) refreshQueue(); if (area === 'local' && ch.captures) refreshCaptures(); });
+chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && (ch.queue || ch.queueStatus)) refreshQueue(); if (area === 'local' && ch.captures) refreshCaptures(); });
 
 exportBtn.addEventListener('click', async () => {
   if (running) return;
@@ -204,3 +211,4 @@ clearBtn.addEventListener('click', async () => { await chrome.storage.local.set(
 
 ping().then((ok) => { exportBtn.disabled = !ok; refreshQueue(); });
 refreshCaptures();
+setInterval(() => { if (!document.hidden) refreshQueue(); }, 10000);
