@@ -168,6 +168,11 @@ exportBtn.addEventListener('click', async () => {
 });
 cancelBtn.addEventListener('click', async () => { try { await chrome.tabs.sendMessage(tabId, { type: 'cancel' }); } catch (e) { /* ignore */ } setStatus(statusEl, 'Cancelling…'); });
 
+// settings (Search export + debug) live behind the gear; the open state is remembered per browser
+const settingsBtn = document.getElementById('settingsBtn'), settingsEl = document.getElementById('settings');
+const showSettings = (on) => { settingsEl.hidden = !on; settingsBtn.setAttribute('aria-expanded', on ? 'true' : 'false'); try { localStorage.setItem('feexport.settings', on ? '1' : '0'); } catch (e) { /* ignore */ } };
+settingsBtn.addEventListener('click', () => showSettings(settingsEl.hidden));
+try { if (localStorage.getItem('feexport.settings') === '1') showSettings(true); } catch (e) { /* ignore */ }
 debugBtn.addEventListener('click', async () => {
   const st = await chrome.storage.local.get({ captures: [], queue: null, logTail: [] });
   let log = (st.logTail || []).concat(lastLog);

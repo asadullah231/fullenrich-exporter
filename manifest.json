@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FE Export",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Export FullEnrich people search results to CSV with full profiles: job history, role descriptions, company data, skills, languages, education. From a list of LinkedIn URLs. Read only, no credits.",
   "permissions": [
     "activeTab",

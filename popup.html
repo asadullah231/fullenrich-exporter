@@ -24,6 +24,12 @@
   .brand h1 { margin: 0; font-size: 11px; font-weight: 500; color: var(--text-2); letter-spacing: 0.14em; text-transform: uppercase; }
   .badge { margin-left: auto; font-size: 11px; font-weight: 500; letter-spacing: 0.02em; color: var(--accent-dark); background: var(--accent-light); border-radius: 9999px; padding: 4px 10px; display: inline-flex; align-items: center; gap: 5px; }
   .badge svg { width: 12px; height: 12px; }
+  button.gear { flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border-radius: 9999px; border: 1px solid transparent; background: transparent; color: var(--text-2); }
+  button.gear svg { width: 17px; height: 17px; transition: transform 0.35s var(--ease); }
+  button.gear:hover { background: var(--accent-light); border-color: var(--accent-light); color: var(--accent-dark); }
+  button.gear[aria-expanded="true"] { background: var(--accent-light); color: var(--accent-dark); }
+  button.gear[aria-expanded="true"] svg { transform: rotate(60deg); }
+  #settings[hidden] { display: none; }
 
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 20px; margin-bottom: 16px; }
   .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 15px; font-weight: 500; letter-spacing: -0.02em; color: var(--text); }
@@ -82,6 +88,7 @@
     <img src="icons/fullenrich-logo.png" alt="FullEnrich" class="logo" />
     <h1>Export</h1>
     <span class="badge" title="Nothing here spends FullEnrich credits"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>0 credits</span>
+    <button id="settingsBtn" class="gear" title="Settings" aria-expanded="false" aria-controls="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
   </header>
 
   <div class="status-box" style="margin-bottom:16px"><div id="status" class="status-line">Checking…</div></div>
@@ -109,6 +116,7 @@
     </div>
   </section>
 
+  <div id="settings" hidden>
   <section class="card">
     <div class="card-head" title="Export what the People table shows now"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>Search</div>
     <div class="fields" style="margin-top:0">
@@ -126,6 +134,7 @@
     <button id="clearBtn" class="icon" title="Clear captured data"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg></button>
   </div>
   <p class="footnote" id="capInfo" style="margin-top:10px"></p>
+  </div>
 </body>
 <script src="popup.js"></script>
 </html>
