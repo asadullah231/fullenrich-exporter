@@ -127,8 +127,9 @@ async function refreshQueue() {
     else if (qs && qs.phase) cur = '\n' + qs.phase + (qs.rateLimitHits ? ' · limits ' + qs.rateLimitHits : '');
     else cur = q.cursor < n ? '\n' + ((q.items[q.cursor] || {}).name || '') : '';
   }
-  setStatus(qstatus, done + ' found · ' + (nf - err) + ' missing' + (err ? ' · ' + err + ' errors' : '') + (pend ? ' · ' + pend + ' left' : '') + ' / ' + n + (q.state === 'finished' ? ' · done' : (q.state === 'paused' ? ' · paused' : '')) + eta + cur, q.state === 'finished' ? 'success' : '');
-  qStart.lastChild.textContent = pend === n ? 'Start' : (pend ? 'Resume' : (nf ? 'Retry' : 'Start'));
+  const stateWord = q.state === 'running' ? 'Running' : (q.state === 'finished' ? 'Finished' : (q.state === 'paused' && (done || nf) ? 'Paused' : 'Not started'));
+  setStatus(qstatus, stateWord + ' · ' + done + ' found · ' + (nf - err) + ' missing' + (err ? ' · ' + err + ' errors' : '') + (pend ? ' · ' + pend + ' left' : '') + ' / ' + n + '' + eta + cur, q.state === 'finished' ? 'success' : '');
+  qStart.lastChild.textContent = q.state === 'running' ? 'Running' : (pend === n ? 'Start' : (pend ? 'Resume' : (nf ? 'Retry' : 'Start')));
   qStart.disabled = !onSearchPage || q.state === 'running' || (!pend && !nf);
   qPause.disabled = q.state !== 'running';
   qExport.disabled = !(done || nf || err);
@@ -149,7 +150,7 @@ csvFile.addEventListener('change', async () => {
 // Batch / Pause / Panel settings survive closing the popup
 const SETTINGS_KEY = 'feexport.queueOpts';
 const saveOpts = () => { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ panels: qPanels.checked, delay: qDelay.value, batch: qBatch.value })); } catch (e) { /* ignore */ } };
-try { const o = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); if (o) { qPanels.checked = o.panels !== false; if (o.delay) qDelay.value = o.delay; if (o.batch) qBatch.value = o.batch; } } catch (e) { /* ignore */ }
+try { const o = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); if (o) { qPanels.checked = o.panels !== false; if (o.delay) qDelay.value = o.delay; if (o.batch) qBatch.value = Math.min(30, Math.max(1, Number(o.batch) || 20)); } } catch (e) { /* ignore */ }
 [qPanels, qDelay, qBatch].forEach((el) => { el.addEventListener('change', saveOpts); el.addEventListener('input', saveOpts); });
 
 qStart.addEventListener('click', async () => {

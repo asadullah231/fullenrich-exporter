@@ -525,11 +525,22 @@
   // page reloaded while a run was going: nothing is running any more, so the saved list goes back to "paused" (Resume works again)
   loadQueue().then((q) => { if (q && q.state === 'running') { q.state = 'paused'; q.note = 'page reloaded'; saveQueue(q); dbg('queue was running when the page reloaded: set to paused'); } });
   // ---- page size (50 by default; options 50 / 100 / 200 in a dropdown at the pager) ----
-  let pageSizeSet = false;
+  let pageSizeSet = false, pageSizeValue = 50;
   const setPageSize = async (n) => {
     if (pageSizeSet) return true;
-    const cands = Array.from(document.querySelectorAll('button, [role="combobox"], [role="listbox"], select, [aria-haspopup]')).filter((e) => isVisible(e) && /^\s*50\b/.test(txt(e)) && txt(e).length <= 20 || (e.tagName === 'SELECT' && Array.from(e.options).some((o) => o.value === String(n) || txt(o) === String(n))));
-    const ctl = cands.sort((x, y) => x.outerHTML.length - y.outerHTML.length)[0];
+    // the control sits at the bottom right: "Rows per page  50 v". Prefer the element right after that label.
+    const label = Array.from(document.querySelectorAll('span, div, p, label')).filter((e) => isVisible(e) && /^rows per page$/i.test(txt(e))).sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0];
+    let ctl = null;
+    if (label) {
+      const box = label.parentElement;
+      ctl = box && Array.from(box.querySelectorAll('button, select, [role="combobox"], [role="button"], [aria-haspopup]')).filter(isVisible).sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0];
+      if (!ctl && box) { const sib = label.nextElementSibling; if (sib && isVisible(sib)) ctl = sib.matches('button, select, [role="combobox"]') ? sib : sib.querySelector('button, select, [role="combobox"]') || sib; }
+      if (!ctl) dumpOnce('pagerlabel', box, 'Rows per page label found, control not recognised');
+    }
+    if (!ctl) {
+      const cands = Array.from(document.querySelectorAll('button, [role="combobox"], [role="listbox"], select, [aria-haspopup]')).filter((e) => isVisible(e) && /^\s*50\b/.test(txt(e)) && txt(e).length <= 20 || (e.tagName === 'SELECT' && Array.from(e.options).some((o) => o.value === String(n) || txt(o) === String(n))));
+      ctl = cands.sort((x, y) => x.outerHTML.length - y.outerHTML.length)[0];
+    }
     if (!ctl) {
       const cur = document.querySelector('[aria-current="page"]');
       const foot = (cur && (cur.closest('nav') || cur.parentElement && cur.parentElement.parentElement && cur.parentElement.parentElement.parentElement)) || Array.from(document.querySelectorAll('div, footer, nav')).filter((e) => isVisible(e) && /\bof\b\s*[\d,.]+/.test(txt(e)) && txt(e).length < 200).sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0] || null;
@@ -539,8 +550,14 @@
     if (ctl.tagName === 'SELECT') { ctl.value = String(n); ctl.dispatchEvent(new Event('change', { bubbles: true })); pageSizeSet = true; return true; }
     const before = new Set(Array.from(document.querySelectorAll('li, [role="option"], button, div')).filter(isVisible));
     ctl.click();
-    const opt = await waitFor(() => Array.from(document.querySelectorAll('li, [role="option"], button, div, span')).filter((e) => isVisible(e) && !before.has(e) && e.children.length <= 1 && txt(e) === String(n))[0], 2000, 100);
+    let opt = await waitFor(() => Array.from(document.querySelectorAll('li, [role="option"], button, div, span')).filter((e) => isVisible(e) && !before.has(e) && e.children.length <= 1 && txt(e) === String(n))[0], 2000, 100);
+    if (!opt) {
+      const nums = Array.from(document.querySelectorAll('li, [role="option"], button, div, span')).filter((e) => isVisible(e) && !before.has(e) && e.children.length <= 1 && /^\d+$/.test(txt(e))).sort((a, b) => parseInt(txt(b), 10) - parseInt(txt(a), 10));
+      opt = nums[0] || null;
+      if (opt) { n = parseInt(txt(opt), 10); dbg('rows per page: no 200 option, taking ' + n); }
+    }
     if (!opt) { dumpOnce('pager', ctl.parentElement, 'opened rows-per-page, no "' + n + '" option'); document.body.click(); return false; }
+    pageSizeValue = n;
     opt.click();
     await sleep(300);
     pageSizeSet = true;
@@ -593,7 +610,7 @@
     const companies = Array.from(new Set(items.map((i) => i.company).filter(Boolean)));
     let coAdded = 0;
     const missingBefore = items.filter((it) => !contactFor(it.linkedinUrl)).length;
-    if (missingBefore && (total === null || total > (pageSizeSet ? PAGE : 50)) && companies.length) {
+    if (missingBefore && (total === null || total > (pageSizeSet ? pageSizeValue : 50)) && companies.length) {
       const sig2 = tableSignature();
       for (let k = 0; k < companies.length && !cancelled; k++) { setPhase((opts._label || 'Batch') + ' · companies ' + (k + 1) + '/' + companies.length); const r = await addChip('Company Name', companies[k]); if (r.ok) coAdded++; }
       await waitTable(sig2);
