@@ -105,6 +105,10 @@
         const reqBytes = await bodyToBytes(init && init.body);
         const resBuf = await res.clone().arrayBuffer();
         const parsed = parseResponse(resBuf);
+        // FullEnrich answers a too-fast search with 429 or a grpc error ("Rate limit exceeded for search"); tell the content script so it backs off
+        const gm = res.headers.get('grpc-message') || '';
+        const tr = typeof parsed.trailer === 'string' ? parsed.trailer : JSON.stringify(parsed.trailer || '');
+        if (res.status === 429 || /rate ?limit/i.test(gm) || /rate ?limit/i.test(tr)) emit('feexport:ratelimit', { at: new Date().toISOString(), status: res.status, message: gm || tr.slice(0, 200) });
         emit('feexport:contacts', { at: new Date().toISOString(), total: parsed.total, errors: parsed.errors, contacts: parsed.contacts });
         emit('feexport:capture', { at: new Date().toISOString(), url, status: res.status, resContentType: res.headers.get('content-type') || '', reqB64: toB64(reqBytes), resB64: toB64(resBuf), resBytes: resBuf.byteLength, decoded: parsed.contacts.length, decodeErrors: parsed.errors });
       } catch (e) { emit('feexport:capture', { at: new Date().toISOString(), url, error: String(e && e.message || e) }); }

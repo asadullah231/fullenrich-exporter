@@ -61,6 +61,15 @@
     if (p.errors) dbg('search response: ' + p.errors + ' frame(s) failed to decode');
   });
   let responsesSeen = 0;
+  // rate limit: set by the fetch hook (429 / grpc message) or by FullEnrich's toast; the batch loop waits and retries
+  let rateLimitHits = 0, rateLimitedAt = 0, chipGap = 90;
+  const noteRateLimit = (src) => { rateLimitHits++; rateLimitedAt = Date.now(); dbg('RATE LIMIT (' + src + '), hit #' + rateLimitHits); };
+  document.addEventListener('feexport:ratelimit', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { p = {}; } noteRateLimit('response ' + (p.status || '') + ' ' + (p.message || '')); });
+  new MutationObserver((muts) => {
+    for (const m of muts) for (const n of m.addedNodes) {
+      if (n.nodeType === 1 && /rate limit exceeded/i.test(n.textContent || '') && (n.textContent || '').length < 300 && Date.now() - rateLimitedAt > 2000) { noteRateLimit('toast'); return; }
+    }
+  }).observe(document.body, { childList: true, subtree: true });
   const contactFor = (url) => { const k = slugKey(url).toLowerCase(); return k ? contactsBySlug.get(k) || null : null; };
   const profileFromContact = (c, row) => Object.assign({}, c, {
     description: c.description || '',
@@ -387,7 +396,7 @@
     setNative(f.input, '');
     await sleep(30);
     setNative(f.input, value);
-    await sleep(90);
+    await sleep(chipGap);
     pressEnter(f.input);
     let how = 'enter';
     // the chip normally shows at once; if the app offers its suggestion list instead, click the entry as soon as it appears
@@ -556,7 +565,17 @@
       for (let i = 0; i < pend.length && !cancelled; i += batchSize) {
         const items = pend.slice(i, i + batchSize);
         const t0 = Date.now();
-        try { await runBatch(items, opts); } catch (e) { dbg('batch error: ' + (e && e.message)); }
+        for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
+          const hitsBefore = rateLimitHits;
+          try { await runBatch(items, opts); } catch (e) { dbg('batch error: ' + (e && e.message)); }
+          if (rateLimitHits === hitsBefore) break;
+          // FullEnrich limited this batch: wait it out, type chips slower from now on, then redo the people still open
+          chipGap = Math.min(chipGap + 150, 600);
+          const wait = 30000 + 30000 * attempt;
+          dbg('rate limited during batch: waiting ' + wait / 1000 + ' s, chip gap now ' + chipGap + ' ms, attempt ' + (attempt + 2));
+          await sleep(wait);
+          items.forEach((it) => { if (it.status !== 'done') { it.status = 'queued'; it.note = ''; } });
+        }
         const ms = Date.now() - t0; items.forEach((it) => { if (it.status === 'done' && !it.ms) it.ms = Math.round(ms / items.length); });
         q.cursor = Math.min(q.items.length, q.items.indexOf(items[items.length - 1]) + 1); q.updatedAt = new Date().toISOString();
         await saveQueue(q);
