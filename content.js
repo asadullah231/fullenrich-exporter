@@ -574,7 +574,7 @@
           const wait = 30000 + 30000 * attempt;
           dbg('rate limited during batch: waiting ' + wait / 1000 + ' s, chip gap now ' + chipGap + ' ms, attempt ' + (attempt + 2));
           await sleep(wait);
-          items.forEach((it) => { if (it.status !== 'done') { it.status = 'queued'; it.note = ''; } });
+          items.forEach((it) => { if (it.status !== 'done') { it.status = 'pending'; it.note = ''; } });
         }
         const ms = Date.now() - t0; items.forEach((it) => { if (it.status === 'done' && !it.ms) it.ms = Math.round(ms / items.length); });
         q.cursor = Math.min(q.items.length, q.items.indexOf(items[items.length - 1]) + 1); q.updatedAt = new Date().toISOString();

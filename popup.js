@@ -139,10 +139,27 @@ csvFile.addEventListener('change', async () => {
   refreshQueue();
 });
 
+// Batch / Pause / Panel settings survive closing the popup
+const SETTINGS_KEY = 'feexport.queueOpts';
+const saveOpts = () => { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ panels: qPanels.checked, delay: qDelay.value, batch: qBatch.value })); } catch (e) { /* ignore */ } };
+try { const o = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); if (o) { qPanels.checked = o.panels !== false; if (o.delay) qDelay.value = o.delay; if (o.batch) qBatch.value = o.batch; } } catch (e) { /* ignore */ }
+[qPanels, qDelay, qBatch].forEach((el) => { el.addEventListener('change', saveOpts); el.addEventListener('input', saveOpts); });
+
 qStart.addEventListener('click', async () => {
   const st = await chrome.storage.local.get({ queue: null }); const q = st.queue; if (!q) return;
   const pend = q.items.filter((i) => i.status === 'pending').length;
-  await chrome.tabs.sendMessage(tabId, { type: 'startQueue', opts: { panels: qPanels.checked, delayMs: Number(qDelay.value) || 500, batchSize: Number(qBatch.value) || 1, retryNotFound: !pend } });
+  saveOpts();
+  qStart.disabled = true;
+  try {
+    const r = await chrome.tabs.sendMessage(tabId, { type: 'startQueue', opts: { panels: qPanels.checked, delayMs: Number(qDelay.value) || 500, batchSize: Number(qBatch.value) || 1, retryNotFound: !pend } });
+    if (!r || !r.ok) throw new Error('no reply');
+    setStatus(qstatus, 'Starting…');
+  } catch (e) {
+    // the tab has no (current) content script: happens after an extension reload until the FullEnrich tab is reloaded too
+    setStatus(qstatus, 'Reload the FullEnrich tab, then press Resume', 'error');
+    qStart.disabled = false;
+    return;
+  }
   setTimeout(refreshQueue, 400);
 });
 qPause.addEventListener('click', async () => { try { await chrome.tabs.sendMessage(tabId, { type: 'cancel' }); } catch (e) { /* ignore */ } setStatus(qstatus, 'Pausing…'); });
