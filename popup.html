@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FE Export</title>
+<style>
+  @font-face { font-family: "Inter"; font-style: normal; font-weight: 100 900; font-display: swap; src: url("fonts/Inter-latin.woff2") format("woff2"); }
+  :root {
+    color-scheme: light;
+    --bg: #FFFFFF; --surface: #F8FBFF; --text: #0A0A0A; --text-2: #6B7280; --text-3: #9CA3AF;
+    --border: #E5E7EB; --border-2: #D5D3D2;
+    --accent: #1CA7FD; --accent-dark: #148CFC; --accent-light: #DEF2FE; --accent-light-2: #DBF1FE;
+    --grad: linear-gradient(135deg, #1CA7FD 0%, #148CFC 100%);
+    --green: #16A34A; --red: #DC2626;
+    --shadow: 0 4px 16px rgba(0, 0, 0, 0.08); --shadow-btn: 0 2px 8px rgba(28, 167, 253, 0.35);
+    --ring: 0 0 0 3px #DEF2FE; --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { width: 360px; padding: 24px; background: var(--bg); color: var(--text); font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; font-size: 13px; line-height: 1.45; letter-spacing: -0.006em; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; font-feature-settings: "cv11", "ss01", "calt", "liga"; }
+
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .brand img.logo { height: 28px; width: auto; }
+  .brand h1 { margin: 0; font-size: 11px; font-weight: 500; color: var(--text-2); letter-spacing: 0.14em; text-transform: uppercase; }
+  .badge { margin-left: auto; font-size: 11px; font-weight: 500; letter-spacing: 0.02em; color: var(--accent-dark); background: var(--accent-light); border-radius: 9999px; padding: 4px 10px; display: inline-flex; align-items: center; gap: 5px; }
+  .badge svg { width: 12px; height: 12px; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 20px; margin-bottom: 16px; }
+  .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 15px; font-weight: 500; letter-spacing: -0.02em; color: var(--text); }
+  .card-head svg { width: 18px; height: 18px; color: var(--accent-dark); }
+
+  .status-line { font-size: 13px; font-weight: 400; white-space: pre-wrap; font-variant-numeric: tabular-nums; letter-spacing: -0.004em; color: var(--text); }
+  .status-line.error { color: var(--red); }
+  .status-line.success { color: var(--green); }
+  .status-box { background: #FFFFFF; border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; }
+  .bar { width: 100%; height: 6px; background: var(--accent-light-2); border-radius: 9999px; overflow: hidden; margin-top: 10px; }
+  .bar > div { height: 100%; width: 0%; background: var(--grad); border-radius: 9999px; transition: width 0.6s var(--ease); }
+
+  button { font: inherit; cursor: pointer; height: 38px; padding: 0 16px; border-radius: 9999px; border: 1px solid var(--border-2); background: #FFFFFF; color: var(--text); font-weight: 500; font-size: 13px; letter-spacing: -0.006em; flex: 1 1 0; min-width: 0; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; gap: 6px; transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s var(--ease); }
+  button svg { width: 15px; height: 15px; flex: 0 0 auto; }
+  button:hover { background: var(--accent-light); border-color: var(--accent-light); color: var(--accent-dark); }
+  button:active { transform: translateY(1px); }
+  button:focus-visible { outline: none; box-shadow: var(--ring); border-color: var(--accent); }
+  button:disabled { opacity: 0.45; cursor: default; transform: none; }
+  button:disabled:hover { background: #FFFFFF; border-color: var(--border-2); color: var(--text); }
+  button.primary { background: var(--grad); color: #FFFFFF; border: 0; font-weight: 500; box-shadow: var(--shadow-btn); }
+  button.primary:hover { background: var(--accent-dark); color: #FFFFFF; }
+  button.primary:disabled { box-shadow: none; }
+  button.icon { flex: 0 0 38px; width: 38px; padding: 0; }
+  .actions { display: flex; gap: 8px; margin-top: 14px; }
+  .actions + .actions { margin-top: 8px; }
+
+  .field { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); font-size: 13px; font-weight: 400; color: var(--text); }
+  .field svg { width: 16px; height: 16px; color: var(--text-2); margin-right: 8px; vertical-align: -3px; }
+  .fields { margin-top: 14px; }
+  .fields .field:first-child { border-top: 0; }
+
+  input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .dropzone { display: flex; align-items: center; gap: 12px; cursor: pointer; border: 1.5px dashed var(--border-2); border-radius: 10px; padding: 12px 14px; background: #FFFFFF; transition: border-color 0.2s ease, background 0.2s ease; }
+  .dropzone:hover { border-color: var(--accent); background: var(--accent-light-2); }
+  .dz-icon { width: 34px; height: 34px; border-radius: 9999px; background: var(--accent-light); color: var(--accent-dark); display: grid; place-items: center; flex: 0 0 auto; }
+  .dz-icon svg { width: 16px; height: 16px; }
+  .dz-title { font-weight: 500; font-size: 13px; letter-spacing: -0.01em; }
+  .file-name { font-size: 11.5px; color: var(--text-2); letter-spacing: 0.01em; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+
+  input[type="checkbox"] { appearance: none; -webkit-appearance: none; margin: 0; flex: 0 0 auto; cursor: pointer; width: 40px; height: 22px; border-radius: 9999px; background: #D1D5DB; position: relative; transition: background 0.25s ease; }
+  input[type="checkbox"]::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 1px 3px rgba(0,0,0,0.2); transition: transform 0.25s var(--ease); }
+  input[type="checkbox"]:checked { background: var(--accent); }
+  input[type="checkbox"]:checked::after { transform: translateX(18px); }
+  input[type="checkbox"]:focus-visible { outline: none; box-shadow: var(--ring); }
+
+  .num { font: inherit; font-size: 13px; font-variant-numeric: tabular-nums; width: 72px; height: 34px; padding: 0 10px; text-align: right; border-radius: 8px; border: 1px solid var(--border-2); background: #FFFFFF; color: var(--text); transition: border-color 0.2s ease, box-shadow 0.2s ease; }
+  .num:hover { border-color: var(--accent); }
+  .num:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+
+  .footnote { font-size: 11px; color: var(--text-3); margin: 0; text-align: center; letter-spacing: 0.03em; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+</style>
+</head>
+<body>
+  <header class="brand">
+    <img src="icons/fullenrich-logo.png" alt="FullEnrich" class="logo" />
+    <h1>Export</h1>
+    <span class="badge" title="Nothing here spends FullEnrich credits"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>0 credits</span>
+  </header>
+
+  <div class="status-box" style="margin-bottom:16px"><div id="status" class="status-line">Checking…</div></div>
+
+  <section class="card">
+    <div class="card-head" title="Enrich a list of LinkedIn profile URLs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h8"/></svg>List</div>
+    <label class="dropzone" for="csvFile" title="CSV with a LinkedIn profile URL column">
+      <span class="dz-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14"/></svg></span>
+      <span style="flex:1;min-width:0"><span class="dz-title">Choose CSV</span><span class="file-name" id="fileName">No file</span></span>
+    </label>
+    <input type="file" id="csvFile" accept=".csv,text/csv" />
+    <div class="status-box" style="margin-top:12px"><div id="qstatus" class="status-line">No list</div><div class="bar"><div id="qbar"></div></div></div>
+    <div class="fields">
+      <label class="field" title="Open the side panel only when the search response has no profile"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>Panel</span><input type="checkbox" id="qPanels" checked /></label>
+      <label class="field" title="People per search (1 = one by one)"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Batch</span><input class="num" type="number" id="qBatch" value="20" min="1" max="40" step="1" /></label>
+      <label class="field" title="Pause between searches, milliseconds"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Pause</span><input class="num" type="number" id="qDelay" value="500" min="200" step="100" /></label>
+    </div>
+    <div class="actions">
+      <button id="qStart" class="primary" disabled><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>Start</button>
+      <button id="qPause" disabled title="Pause after the current person"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>Pause</button>
+    </div>
+    <div class="actions">
+      <button id="qExport" disabled title="Download results CSV"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>Export</button>
+      <button id="qClear" class="icon" disabled title="Clear list"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg></button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head" title="Export what the People table shows now"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>Search</div>
+    <div class="fields" style="margin-top:0">
+      <label class="field" title="Open each row's panel"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>Panel</span><input type="checkbox" id="panelsToggle" checked /></label>
+      <label class="field" title="Walk every page"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>All pages</span><input type="checkbox" id="allPagesToggle" /></label>
+    </div>
+    <div class="actions">
+      <button id="exportBtn" class="primary" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>Export</button>
+      <button id="cancelBtn" style="display:none">Cancel</button>
+    </div>
+  </section>
+
+  <div class="actions" style="margin-top:0">
+    <button id="debugBtn" title="Download debug file"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4M16 2v4"/><rect x="5" y="6" width="14" height="14" rx="4"/><path d="M2 12h3M19 12h3M5 16H3M21 16h-2"/></svg>Debug</button>
+    <button id="clearBtn" class="icon" title="Clear captured data"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg></button>
+  </div>
+  <p class="footnote" id="capInfo" style="margin-top:10px"></p>
+</body>
+<script src="popup.js"></script>
+</html>
