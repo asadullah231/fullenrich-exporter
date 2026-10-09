@@ -466,6 +466,8 @@
   // ---- queue runner (v0.2) ----------------------------------------------------------
   const loadQueue = () => new Promise((r) => chrome.storage.local.get({ queue: null }, (st) => r(st.queue)));
   const saveQueue = (q) => new Promise((r) => chrome.storage.local.set({ queue: q }, r));
+  // page reloaded while a run was going: nothing is running any more, so the saved list goes back to "paused" (Resume works again)
+  loadQueue().then((q) => { if (q && q.state === 'running') { q.state = 'paused'; q.note = 'page reloaded'; saveQueue(q); dbg('queue was running when the page reloaded: set to paused'); } });
   // ---- page size (50 by default; options 50 / 100 / 200 in a dropdown at the pager) ----
   let pageSizeSet = false;
   const setPageSize = async (n) => {

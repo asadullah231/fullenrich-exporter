@@ -4,7 +4,7 @@ const exportBtn = $('exportBtn'), cancelBtn = $('cancelBtn'), debugBtn = $('debu
 const panelsToggle = $('panelsToggle'), allPagesToggle = $('allPagesToggle');
 const csvFile = $('csvFile'), qStart = $('qStart'), qPause = $('qPause'), qExport = $('qExport'), qClear = $('qClear'), qPanels = $('qPanels'), qDelay = $('qDelay'), qBatch = $('qBatch');
 
-let tabId = null, onSearchPage = false, running = false, lastLog = [];
+let tabId = null, onSearchPage = false, running = false, queueLive = false, lastLog = [];
 
 const setStatus = (el, t, kind) => { el.textContent = t; el.className = 'status-line' + (kind ? ' ' + kind : ''); };
 const csvEscape = (v) => { const s = v == null ? '' : String(v); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -95,7 +95,7 @@ async function ping() {
     if (!r || !r.ok) throw new Error('no reply');
     const i = r.info;
     if (!i.onSearch) { setStatus(statusEl, 'Go to Search → People', 'error'); return false; }
-    onSearchPage = true;
+    onSearchPage = true; queueLive = !!r.queueRunning;
     setStatus(statusEl, 'Ready' + (i.rows ? ' · ' + i.rows + ' rows' : '') + (i.counter ? ' · ' + i.counter.replace(/ people$/, '') : '') + (r.contacts ? ' · ' + r.contacts + ' profiles' : '') + (r.queueRunning ? ' · running' : ''), 'success');
     return true;
   } catch (e) { setStatus(statusEl, 'Reload the FullEnrich tab', 'error'); return false; }
@@ -110,6 +110,8 @@ async function refreshCaptures() {
 async function refreshQueue() {
   const st = await chrome.storage.local.get({ queue: null });
   const q = st.queue;
+  // stale 'running' (tab reloaded, content script says nothing runs): treat as paused so Resume is enabled
+  if (q && q.items && q.state === 'running' && onSearchPage && !queueLive) { q.state = 'paused'; q.note = 'page reloaded'; await chrome.storage.local.set({ queue: q }); }
   if (!q || !q.items) { setStatus(qstatus, 'No list'); if (fileNameEl) fileNameEl.textContent = 'No file'; qbar.style.width = '0%'; qStart.disabled = true; qPause.disabled = true; qExport.disabled = true; qClear.disabled = true; return; }
   if (fileNameEl && q.fileName) fileNameEl.textContent = q.fileName;
   const n = q.items.length, done = q.items.filter((i) => i.status === 'done').length, nf = q.items.filter((i) => i.status === 'not_found').length + q.items.filter((i) => i.status === 'error').length, err = q.items.filter((i) => i.status === 'error').length, pend = n - done - nf;
