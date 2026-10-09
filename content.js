@@ -343,6 +343,12 @@
     return { btn, root: filterRoot(btn), panel, input: Array.from(panel.querySelectorAll('input:not([type="checkbox"]):not([type="radio"])')).find(isVisible) || panel.querySelector('input') };
   };
   const chipsOf = (root) => Array.from(root.querySelectorAll('.chip span[title]')).map((s) => s.getAttribute('title'));
+  const chipCount = (root) => {
+    const shown = root.querySelectorAll('.chip span[title]').length;
+    const more = root.querySelector('button[aria-label^="Show all"]');
+    const m = more && (more.getAttribute('aria-label').match(/(\d+)/) || txt(more).match(/(\d+)\s*other/i));
+    return m ? Math.max(shown, parseInt(m[1], 10)) : shown;
+  };
   const clearChips = async (root) => {
     let removed = 0;
     for (let i = 0; i < 80; i++) {
@@ -376,8 +382,8 @@
     const f = await openFilter(label);
     chipStats.open += Date.now() - t0;
     if (!f || !f.input) return { ok: false, reason: 'filter "' + label + '" not usable' };
-    const before = chipsOf(f.root).length;
-    const hasChip = () => chipsOf(f.root).length > before;
+    const before = chipCount(f.root);
+    const hasChip = () => chipCount(f.root) > before;
     setNative(f.input, '');
     await sleep(30);
     setNative(f.input, value);
@@ -464,9 +470,14 @@
   let pageSizeSet = false;
   const setPageSize = async (n) => {
     if (pageSizeSet) return true;
-    const cands = Array.from(document.querySelectorAll('button, [role="combobox"], select')).filter((e) => isVisible(e) && /^\s*50\s*$/.test(txt(e)) || (e.tagName === 'SELECT' && Array.from(e.options).some((o) => o.value === String(n) || txt(o) === String(n))));
+    const cands = Array.from(document.querySelectorAll('button, [role="combobox"], [role="listbox"], select, [aria-haspopup]')).filter((e) => isVisible(e) && /^\s*50\b/.test(txt(e)) && txt(e).length <= 20 || (e.tagName === 'SELECT' && Array.from(e.options).some((o) => o.value === String(n) || txt(o) === String(n))));
     const ctl = cands.sort((x, y) => x.outerHTML.length - y.outerHTML.length)[0];
-    if (!ctl) { dumpOnce('pager', document.querySelector('[aria-current="page"]') ? document.querySelector('[aria-current="page"]').closest('nav, div') : null, 'no rows-per-page control found'); return false; }
+    if (!ctl) {
+      const cur = document.querySelector('[aria-current="page"]');
+      const foot = (cur && (cur.closest('nav') || cur.parentElement && cur.parentElement.parentElement && cur.parentElement.parentElement.parentElement)) || Array.from(document.querySelectorAll('div, footer, nav')).filter((e) => isVisible(e) && /\bof\b\s*[\d,.]+/.test(txt(e)) && txt(e).length < 200).sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0] || null;
+      dumpOnce('pager', foot, 'no rows-per-page control found (counter "' + counterText() + '")');
+      return false;
+    }
     if (ctl.tagName === 'SELECT') { ctl.value = String(n); ctl.dispatchEvent(new Event('change', { bubbles: true })); pageSizeSet = true; return true; }
     const before = new Set(Array.from(document.querySelectorAll('li, [role="option"], button, div')).filter(isVisible));
     ctl.click();
