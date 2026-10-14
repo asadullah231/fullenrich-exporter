@@ -89,10 +89,12 @@
     let done = false;
     const finish = () => { if (!done) { done = true; resolve(); } };
     try { chrome.runtime.sendMessage({ type: 'sleep', ms }, () => { void chrome.runtime.lastError; finish(); }); } catch (e) { finish(); }
-    setTimeout(finish, ms + 1500); // page-timer fallback in case the worker is unavailable
+    setTimeout(finish, ms + 65000); // page-timer fallback only if the worker never answers (a throttled page timer may take a minute)
   });
+  // every wait goes through the service worker, even 30 ms ones: a hidden tab's own timers run once per minute after
+  // five minutes in the background (Chrome's intensive throttling), which is exactly the "it stops when I switch tabs" symptom
   const sleep = async (ms) => {
-    if (ms < 200) return new Promise((r) => setTimeout(r, ms));
+    ms = Math.max(0, Number(ms) || 0);
     while (ms > 0) { const part = Math.min(ms, 20000); await bgSleep(part); ms -= part; }
   };
   // a long wait that stops early when the user presses Pause and keeps the popup informed
