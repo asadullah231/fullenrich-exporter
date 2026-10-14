@@ -108,8 +108,43 @@
   };
   // live status for the popup: small record, written at most twice a second (the full queue is big and is saved per batch)
   let phaseTimer = null, phaseLast = '';
+  // ---- in-page status pill: live counts + Pause / Resume without opening the popup --------------
+  let pill = null, lastOpts = null;
+  const pillCounts = (q) => { const n = q.items.length, done = q.items.filter((i) => i.status === 'done').length, nf = q.items.filter((i) => i.status === 'not_found' || i.status === 'error').length; return { n, done, nf, pend: n - done - nf }; };
+  const ensurePill = () => {
+    if (pill && pill.host.isConnected) return pill;
+    const host = document.createElement('div'); host.id = 'feexport-pill'; host.style.cssText = 'all:initial;position:fixed;left:16px;bottom:16px;z-index:2147483646;';
+    const sh = host.attachShadow({ mode: 'open' });
+    sh.innerHTML = `<style>
+      .p{font-family:"Inter",-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;font-size:12.5px;line-height:1.3;color:#0A0A0A;background:#FFFFFF;border:1px solid #E5E7EB;border-radius:9999px;box-shadow:0 6px 20px rgba(10,10,10,.12);padding:8px 10px 8px 12px;display:flex;align-items:center;gap:10px;letter-spacing:-0.006em;user-select:none;max-width:460px}
+      .dot{width:8px;height:8px;border-radius:50%;background:#9CA3AF;flex:0 0 auto}.dot.run{background:#1CA7FD;box-shadow:0 0 0 4px rgba(28,167,253,.18)}.dot.done{background:#16A34A}.dot.warn{background:#F59E0B}
+      .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.t b{font-weight:600}.sub{color:#6B7280;margin-left:6px}
+      button{all:unset;cursor:pointer;font:inherit;font-weight:500;color:#148CFC;background:#DEF2FE;border-radius:9999px;padding:4px 10px;flex:0 0 auto}button:hover{background:#BFE6FD}button.x{background:transparent;color:#6B7280;padding:4px 6px}
+    </style><div class="p"><span class="dot"></span><span class="t"></span><button class="act" hidden></button><button class="x" title="Hide">x</button></div>`;
+    document.documentElement.appendChild(host);
+    pill = { host, dot: sh.querySelector('.dot'), t: sh.querySelector('.t'), act: sh.querySelector('.act'), x: sh.querySelector('.x') };
+    pill.x.addEventListener('click', () => { host.remove(); pill = null; pillHidden = true; });
+    pill.act.addEventListener('click', () => {
+      if (queueRunning) { cancelled = true; setPhase('Pausing'); }
+      else if (lastOpts) runQueue(lastOpts);
+    });
+    return pill;
+  };
+  let pillHidden = false;
+  const renderPill = async () => {
+    if (pillHidden) return;
+    const q = await loadQueue();
+    if (!q || !q.items) { if (pill) { pill.host.remove(); pill = null; } return; }
+    const p = ensurePill(); const k = pillCounts(q);
+    const state = queueRunning ? 'Running' : (q.state === 'finished' ? 'Finished' : (k.done || k.nf ? 'Paused' : 'Ready'));
+    p.dot.className = 'dot ' + (queueRunning ? 'run' : (q.state === 'finished' ? 'done' : (rateLimitHits && queueRunning ? 'warn' : '')));
+    p.t.innerHTML = '<b>FE Export</b> ' + state + ' · ' + k.done + ' found' + (k.nf ? ' · ' + k.nf + ' missing' : '') + (k.pend ? ' · ' + k.pend + ' left' : '') + ' / ' + k.n + (queueRunning && phaseLast ? '<span class="sub">' + phaseLast.replace(/</g, '&lt;') + '</span>' : '');
+    p.act.hidden = !(queueRunning || (k.pend && lastOpts));
+    p.act.textContent = queueRunning ? 'Pause' : 'Resume';
+  };
   const setPhase = (text) => {
     phaseLast = text;
+    renderPill().catch(() => {});
     if (phaseTimer) return;
     phaseTimer = setTimeout(() => { phaseTimer = null; try { chrome.storage.local.set({ queueStatus: { phase: phaseLast, at: Date.now(), rateLimitHits, chipGap } }); } catch (e) { /* ignore */ } }, 400);
   };
@@ -540,6 +575,7 @@
   // ---- queue runner (v0.2) ----------------------------------------------------------
   const loadQueue = () => new Promise((r) => chrome.storage.local.get({ queue: null }, (st) => r(st.queue)));
   const saveQueue = (q) => new Promise((r) => chrome.storage.local.set({ queue: q }, r));
+  try { chrome.storage.local.get({ lastOpts: null }, (st) => { lastOpts = st.lastOpts || null; renderPill().catch(() => {}); }); } catch (e) { /* ignore */ }
   // page reloaded while a run was going: nothing is running any more, so the saved list goes back to "paused" (Resume works again)
   loadQueue().then((q) => { if (q && q.state === 'running') { q.state = 'paused'; q.note = 'page reloaded'; saveQueue(q); dbg('queue was running when the page reloaded: set to paused'); } });
   // ---- page size (50 by default; options 50 / 100 / 200 in a dropdown at the pager) ----
@@ -657,6 +693,7 @@
 
   const runQueue = async (opts) => {
     if (queueRunning) return;
+    lastOpts = opts; try { chrome.storage.local.set({ lastOpts: opts }); } catch (e) { /* ignore */ }
     queueRunning = true; cancelled = false;
     const q = await loadQueue();
     if (!q || !q.items) { queueRunning = false; return; }
@@ -738,10 +775,12 @@
     q.state = cancelled ? 'paused' : 'finished';
     await saveQueue(q);
     setPhase(q.state === 'finished' ? 'Finished' : 'Paused');
+    queueRunning = false; renderPill().catch(() => {});
     dbg('queue ' + q.state + ': done ' + q.items.filter((i) => i.status === 'done').length + ', not found ' + q.items.filter((i) => i.status === 'not_found').length + ', error ' + q.items.filter((i) => i.status === 'error').length);
     queueRunning = false;
   };
 
+  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && ch.queue) renderPill().catch(() => {}); }); } catch (e) { /* ignore */ }
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'ping') { sendResponse({ ok: true, info: pageInfo(), url: location.href, queueRunning, contacts: contactsBySlug.size }); return; }
     if (msg.type === 'cancel') { cancelled = true; sendResponse({ ok: true }); return; }
