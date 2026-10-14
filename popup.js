@@ -118,7 +118,7 @@ async function refreshQueue() {
   qbar.style.width = Math.round(((n - pend) / Math.max(n, 1)) * 100) + '%';
   const doneItems = q.items.filter((i) => i.status !== 'pending' && i.ms);
   const avg = doneItems.length ? doneItems.reduce((a, i) => a + (i.ms || 0), 0) / doneItems.length : 0;
-  const eta = q.state === 'running' && pend && avg ? ' · ~' + Math.max(1, Math.round((pend * (avg + 500)) / 60000)) + ' min' : '';
+  const eta = q.state === 'running' && pend ? (q.rate ? ' · ~' + Math.max(1, Math.round(pend / q.rate)) + ' min' : (avg ? ' · ~' + Math.max(1, Math.round((pend * (avg + 500)) / 60000)) + ' min' : '')) : '';
   // live phase from the content script; if it has not moved for a while, say so instead of looking frozen
   let cur = '';
   if (q.state === 'running') {
@@ -150,7 +150,7 @@ csvFile.addEventListener('change', async () => {
 // Batch / Pause / Panel settings survive closing the popup
 const SETTINGS_KEY = 'feexport.queueOpts';
 const saveOpts = () => { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ panels: qPanels.checked, delay: qDelay.value, batch: qBatch.value })); } catch (e) { /* ignore */ } };
-try { const o = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); if (o) { qPanels.checked = o.panels !== false; if (o.delay) qDelay.value = o.delay; if (o.batch) qBatch.value = Math.min(30, Math.max(1, Number(o.batch) || 20)); } } catch (e) { /* ignore */ }
+try { const o = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); if (o) { qPanels.checked = o.panels !== false; if (o.delay) qDelay.value = o.delay; if (o.batch) qBatch.value = Math.min(20, Math.max(1, Number(o.batch) || 20)); } } catch (e) { /* ignore */ }
 [qPanels, qDelay, qBatch].forEach((el) => { el.addEventListener('change', saveOpts); el.addEventListener('input', saveOpts); });
 
 qStart.addEventListener('click', async () => {
@@ -159,7 +159,7 @@ qStart.addEventListener('click', async () => {
   saveOpts();
   qStart.disabled = true;
   try {
-    const r = await chrome.tabs.sendMessage(tabId, { type: 'startQueue', opts: { panels: qPanels.checked, delayMs: Number(qDelay.value) || 500, batchSize: Math.min(30, Math.max(1, Number(qBatch.value) || 1)), retryNotFound: !pend } });
+    const r = await chrome.tabs.sendMessage(tabId, { type: 'startQueue', opts: { panels: qPanels.checked, delayMs: Number(qDelay.value) || 500, batchSize: Math.min(20, Math.max(1, Number(qBatch.value) || 1)), retryNotFound: !pend } });
     if (!r || !r.ok) throw new Error('no reply');
     setStatus(qstatus, 'Starting…');
   } catch (e) {

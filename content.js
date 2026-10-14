@@ -373,6 +373,20 @@
     if (!panel) { dumpOnce('panel:' + label, filterRoot(btn), 'panel or input not found'); return null; }
     return { btn, root: filterRoot(btn), panel, input: Array.from(panel.querySelectorAll('input:not([type="checkbox"]):not([type="radio"])')).find(isVisible) || panel.querySelector('input') };
   };
+  const setExactMatch = async (label, on) => {
+    const f = await openFilter(label);
+    if (!f) return false;
+    const row = Array.from(f.panel.querySelectorAll('div, label')).filter((e) => isVisible(e) && /^exact match$/i.test(txt(e).replace(/\s+/g, ' ').trim()) || (/exact match/i.test(txt(e)) && txt(e).length < 20)).sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0];
+    const box = (row && (row.querySelector('input[type="checkbox"]') || (row.parentElement && row.parentElement.querySelector('input[type="checkbox"]')))) || f.panel.querySelector('input[type="checkbox"]');
+    if (!box) { dumpOnce('exact:' + label, f.panel, 'no Exact match checkbox'); return false; }
+    if (!!box.checked === !!on) return true;
+    await paceRequest();
+    (box.closest('label') || box).click(); lastRequestAt = Date.now();
+    await sleep(150);
+    if (!!box.checked !== !!on) { box.checked = !!on; box.dispatchEvent(new Event('change', { bubbles: true })); await sleep(150); }
+    dbg('exact match ' + (on ? 'on' : 'off') + ' for ' + label + ': ' + box.checked);
+    return !!box.checked === !!on;
+  };
   const chipsOf = (root) => Array.from(root.querySelectorAll('.chip span[title]')).map((s) => s.getAttribute('title'));
   const chipCount = (root) => {
     const shown = root.querySelectorAll('.chip span[title]').length;
@@ -399,14 +413,14 @@
     const ours = ourChipCount();
     if (!ours) return 0;
     const total = filtersCount();
-    const btn = Array.from(document.querySelectorAll('button')).filter((b) => isVisible(b) && /^clear$/i.test(txt(b))).sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0];
-    if (btn && total && total === ours) {
+    const btn = Array.from(document.querySelectorAll('button, a, [role="button"]')).filter((b) => isVisible(b) && /^clear( all)?$/i.test(txt(b))).sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0];
+    if (btn) {
       await paceRequest();
       btn.click(); lastRequestAt = Date.now();
-      const gone = await waitFor(() => ourChipCount() === 0, 3000, 100);
-      if (gone) { dbg('cleared ' + ours + ' chip(s) with the Clear button'); await sleep(150); return ours; }
-      dbg('Clear button did not clear, falling back to one by one');
-    } else if (!btn) dumpOnce('clearbtn', document.querySelector('aside') || document.body, 'no Clear button (filters ' + total + ', ours ' + ours + ')');
+      const gone = await waitFor(() => ourChipCount() === 0, 4000, 100);
+      if (gone) { dbg('cleared ' + ours + ' chip(s) with the Clear button (filters counter said ' + total + ')'); await sleep(150); return ours; }
+      dbg('Clear button did not clear (filters counter ' + total + ', ours ' + ours + '), falling back to one by one');
+    } else dumpOnce('clearbtn', document.querySelector('aside') || document.body, 'no Clear button (filters ' + total + ', ours ' + ours + ')');
     let n = 0;
     for (const l of ['Person Name', 'Company Name']) n += await clearFilter(l);
     return n;
@@ -431,10 +445,12 @@
   let lastRequestAt = 0;
   // keep ~one filter request per chipGap ms (adds and removes both count on the server)
   const paceRequest = async () => { const wait = chipGap - (Date.now() - lastRequestAt); if (wait > 0) await sleep(wait); };
-  const addChip = async (label, value) => {
+  const filterStillOpen = (f) => !!(f && f.btn && f.btn.isConnected && f.btn.getAttribute('aria-expanded') === 'true' && f.input && f.input.isConnected && isVisible(f.input));
+  const addChip = async (label, value, fCached) => {
     const t0 = Date.now();
     await paceRequest();
-    const f = await openFilter(label);
+    const f = filterStillOpen(fCached) ? fCached : await openFilter(label);
+    if (f && fCached) Object.assign(fCached, f);
     chipStats.open += Date.now() - t0;
     if (!f || !f.input) return { ok: false, reason: 'filter "' + label + '" not usable' };
     const before = chipCount(f.root);
@@ -529,10 +545,10 @@
   const setPageSize = async (n) => {
     if (pageSizeSet) return true;
     // the control sits at the bottom right: "Rows per page  50 v". Prefer the element right after that label.
-    const label = Array.from(document.querySelectorAll('span, div, p, label')).filter((e) => isVisible(e) && /^rows per page$/i.test(txt(e))).sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0];
+    const label = Array.from(document.querySelectorAll('span, div, p, label')).filter((e) => isVisible(e) && /^rows per page\b/i.test(txt(e)) && txt(e).length <= 24).sort((a, b) => b.outerHTML.length - a.outerHTML.length)[0];
     let ctl = null;
     if (label) {
-      const box = label.parentElement;
+      const box = label;
       ctl = box && Array.from(box.querySelectorAll('button, select, [role="combobox"], [role="button"], [aria-haspopup]')).filter(isVisible).sort((a, b) => a.outerHTML.length - b.outerHTML.length)[0];
       if (!ctl && box) { const sib = label.nextElementSibling; if (sib && isVisible(sib)) ctl = sib.matches('button, select, [role="combobox"]') ? sib : sib.querySelector('button, select, [role="combobox"]') || sib; }
       if (!ctl) dumpOnce('pagerlabel', box, 'Rows per page label found, control not recognised');
@@ -573,6 +589,9 @@
   };
   const totalCount = () => { const m = counterText().replace(/^\d+ selected \/ /, '').match(/^([\d,.]+) /); return m ? parseInt(m[1].replace(/[,.]/g, ''), 10) : null; };
   const PAGE = 200;
+  let exactSet = false;
+  // the name as FullEnrich stores it: no titles, no suffixes, no brackets (Exact match would otherwise miss "Astha Gupta, PhD, PMP")
+  const cleanName = (it) => { const names = searchNames(it); return names[1] || names[0] || it.name; };
   const runBatch = async (items, opts) => {
     // people already decoded from an earlier response need no search at all
     const pre = items.filter((it) => contactFor(it.linkedinUrl));
@@ -585,25 +604,30 @@
     const tB = Date.now(); const rB = responsesSeen;
     await clearAllFilters();
     if (!pageSizeSet && rowEls().length) await setPageSize(200);
+    if (opts.exact !== false && !exactSet) { exactSet = await setExactMatch('Person Name', true); }
     const tClear = Date.now() - tB;
     let added = 0;
-    for (let k = 0; k < items.length && !cancelled; k++) { const it = items[k]; setPhase((opts._label || 'Batch') + ' · names ' + (k + 1) + '/' + items.length); const r = await addChip('Person Name', it.name); if (r.ok) added++; else dbg('batch: name chip failed for ' + it.name); }
+    const fName = await openFilter('Person Name');
+    for (let k = 0; k < items.length && !cancelled; k++) { const it = items[k]; setPhase((opts._label || 'Batch') + ' · names ' + (k + 1) + '/' + items.length); const r = await addChip('Person Name', cleanName(it), fName); if (r.ok) added++; else dbg('batch: name chip failed for ' + it.name); }
     setPhase((opts._label || 'Batch') + ' · waiting for results');
     const tChips = Date.now() - tB - tClear; const rChips = responsesSeen - rB;
     await waitTable(sig);
-    // the final search itself may have been the one that got limited: wait, then nudge one chip to re-run it (2 requests, not 40)
-    for (let n = 0; n < 2 && !cancelled && rateLimitHits > hitsAtStart && !rowEls().some((tr) => readRow(tr).linkedinUrl); n++) {
+    // two reasons the table can be empty after the chips: the final search was rate limited, or the app never fired a search
+    // ("dead" batch, seen 4x in a row on 14 Oct). Either way: wait, then nudge one chip so the search runs again (2 requests, not 40)
+    for (let n = 0; n < 2 && !cancelled && (rateLimitHits > hitsAtStart || responsesSeen === rB) && !rowEls().some((tr) => readRow(tr).linkedinUrl); n++) {
+      const why = rateLimitHits > hitsAtStart ? 'Rate limited, waiting' : 'No search ran, retrying';
       hitsAtStart = rateLimitHits;
-      await pause(15000 + 15000 * n, 'Rate limited, waiting');
+      await pause(why.startsWith('Rate') ? 15000 + 15000 * n : 3000, why);
       const last = items[items.length - 1];
       const f = await openFilter('Person Name');
       const x = f && Array.from(f.root.querySelectorAll('button[aria-label="Remove ' + last.name.replace(/"/g, '') + '"]')).filter(isVisible)[0];
       const sig3 = tableSignature();
       if (x) { await paceRequest(); x.click(); lastRequestAt = Date.now(); await sleep(400); }
-      await addChip('Person Name', last.name);
+      await addChip('Person Name', cleanName(last));
       await waitTable(sig3);
-      dbg('re-ran the batch search after a rate limit (try ' + (n + 1) + ')');
+      dbg('re-ran the batch search (' + why + ', try ' + (n + 1) + ')');
     }
+    if (!cancelled && responsesSeen === rB) { dbg('batch: no search response at all, leaving these ' + items.length + ' people pending for a retry'); throw new Error('no search response'); }
     const tWait = Date.now() - tB - tClear - tChips;
     // company chips only when the name search returned more than one page (otherwise every match is already here)
     const total = totalCount();
@@ -612,7 +636,8 @@
     const missingBefore = items.filter((it) => !contactFor(it.linkedinUrl)).length;
     if (missingBefore && (total === null || total > (pageSizeSet ? pageSizeValue : 50)) && companies.length) {
       const sig2 = tableSignature();
-      for (let k = 0; k < companies.length && !cancelled; k++) { setPhase((opts._label || 'Batch') + ' · companies ' + (k + 1) + '/' + companies.length); const r = await addChip('Company Name', companies[k]); if (r.ok) coAdded++; }
+      const fCo = await openFilter('Company Name');
+      for (let k = 0; k < companies.length && !cancelled; k++) { setPhase((opts._label || 'Batch') + ' · companies ' + (k + 1) + '/' + companies.length); const r = await addChip('Company Name', companies[k], fCo); if (r.ok) coAdded++; }
       await waitTable(sig2);
     }
     await sleep(300);
@@ -634,6 +659,7 @@
     const q = await loadQueue();
     if (!q || !q.items) { queueRunning = false; return; }
     q.state = 'running'; q.startedAt = q.startedAt || new Date().toISOString(); await saveQueue(q);
+    const runT0 = Date.now(); exactSet = false;
     setPhase('Starting');
     const todo = (it) => opts._onlyErrors ? it.status === 'error' : (it.status === 'pending' || (opts.retryNotFound && (it.status === 'not_found' || it.status === 'error')));
     dbg('queue start: ' + q.items.length + ' items, to do ' + q.items.filter(todo).length + ', batch size ' + (opts.batchSize || 0));
@@ -662,11 +688,13 @@
         setPhase(label + ' · done, ' + items.filter((it) => it.status === 'done').length + '/' + items.length + ' found');
         const ms = Date.now() - t0; items.forEach((it) => { if (it.status === 'done' && !it.ms) it.ms = Math.round(ms / items.length); });
         q.cursor = Math.min(q.items.length, q.items.indexOf(items[items.length - 1]) + 1); q.updatedAt = new Date().toISOString();
+        q.rate = Math.round((q.items.filter((x) => x.status === 'done').length / Math.max(1, (Date.now() - runT0) / 60000)) * 10) / 10;
         await saveQueue(q);
         // after repeated limits, leave more room between batches as well
         await pause(Math.max(opts.delayMs || 500, rateLimitHits >= 2 ? 3000 : 0), null);
       }
     }
+    if (exactSet) { await setExactMatch('Person Name', false); exactSet = false; }
     // pass 2: one by one for everything still open (name + company, then name only)
     for (let idx = 0; idx < q.items.length && !cancelled; idx++) {
       const it = q.items[idx];
