@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 const statusEl = $('status'), qstatus = $('qstatus'), qbar = $('qbar'), capInfo = $('capInfo');
 const exportBtn = $('exportBtn'), cancelBtn = $('cancelBtn'), debugBtn = $('debugBtn'), clearBtn = $('clearBtn');
 const panelsToggle = $('panelsToggle'), allPagesToggle = $('allPagesToggle');
-const csvFile = $('csvFile'), qStart = $('qStart'), qPause = $('qPause'), qExport = $('qExport'), qClear = $('qClear'), qPanels = $('qPanels'), qDelay = $('qDelay'), qBatch = $('qBatch');
+const csvFile = $('csvFile'), qStart = $('qStart'), qPause = $('qPause'), qExport = $('qExport'), qClear = $('qClear'), qPanels = $('qPanels'), qDelay = $('qDelay'), qBatch = $('qBatch'), qDirect = $('qDirect');
 
 let tabId = null, onSearchPage = false, running = false, queueLive = false, lastLog = [];
 
@@ -96,7 +96,7 @@ async function ping() {
     const i = r.info;
     if (!i.onSearch) { setStatus(statusEl, 'Go to Search → People', 'error'); return false; }
     onSearchPage = true; queueLive = !!r.queueRunning;
-    setStatus(statusEl, 'Ready' + (i.rows ? ' · ' + i.rows + ' rows' : '') + (i.counter ? ' · ' + i.counter.replace(/ people$/, '') : '') + (r.contacts ? ' · ' + r.contacts + ' profiles' : '') + (r.queueRunning ? (r.direct ? ' · running, background ok' : ' · running, keep this tab in front for the first batch') : ''), 'success');
+    setStatus(statusEl, 'Ready' + (i.rows ? ' · ' + i.rows + ' rows' : '') + (i.counter ? ' · ' + i.counter.replace(/ people$/, '') : '') + (r.contacts ? ' · ' + r.contacts + ' profiles' : '') + (r.queueRunning ? (r.direct ? ' · running, background ok' : ' · running, keep this tab in front') : ''), 'success');
     return true;
   } catch (e) { setStatus(statusEl, 'Reload the FullEnrich tab', 'error'); return false; }
 }
@@ -149,9 +149,9 @@ csvFile.addEventListener('change', async () => {
 
 // Batch / Pause / Panel settings survive closing the popup
 const SETTINGS_KEY = 'feexport.queueOpts';
-const saveOpts = () => { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ panels: qPanels.checked, delay: qDelay.value, batch: qBatch.value })); } catch (e) { /* ignore */ } };
-try { const o = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); if (o) { qPanels.checked = o.panels !== false; if (o.delay) qDelay.value = o.delay; if (o.batch) qBatch.value = Math.min(20, Math.max(1, Number(o.batch) || 20)); } } catch (e) { /* ignore */ }
-[qPanels, qDelay, qBatch].forEach((el) => { el.addEventListener('change', saveOpts); el.addEventListener('input', saveOpts); });
+const saveOpts = () => { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ panels: qPanels.checked, delay: qDelay.value, batch: qBatch.value, direct: qDirect.checked })); } catch (e) { /* ignore */ } };
+try { const o = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); if (o) { qPanels.checked = o.panels !== false; qDirect.checked = o.direct === true; if (o.delay) qDelay.value = o.delay; if (o.batch) qBatch.value = Math.min(20, Math.max(1, Number(o.batch) || 20)); } } catch (e) { /* ignore */ }
+[qPanels, qDelay, qBatch, qDirect].forEach((el) => { el.addEventListener('change', saveOpts); el.addEventListener('input', saveOpts); });
 
 qStart.addEventListener('click', async () => {
   const st = await chrome.storage.local.get({ queue: null }); const q = st.queue; if (!q) return;
@@ -159,7 +159,7 @@ qStart.addEventListener('click', async () => {
   saveOpts();
   qStart.disabled = true;
   try {
-    const r = await chrome.tabs.sendMessage(tabId, { type: 'startQueue', opts: { panels: qPanels.checked, delayMs: Number(qDelay.value) || 500, batchSize: Math.min(20, Math.max(1, Number(qBatch.value) || 1)), retryNotFound: !pend } });
+    const r = await chrome.tabs.sendMessage(tabId, { type: 'startQueue', opts: { panels: qPanels.checked, direct: qDirect.checked, delayMs: Number(qDelay.value) || 500, batchSize: Math.min(20, Math.max(1, Number(qBatch.value) || 1)), retryNotFound: !pend } });
     if (!r || !r.ok) throw new Error('no reply');
     setStatus(qstatus, 'Starting…');
   } catch (e) {

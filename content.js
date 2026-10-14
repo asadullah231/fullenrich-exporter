@@ -697,7 +697,7 @@
     for (const it of pre) { finishItem(it, null, 'cached'); it.ms = 0; }
     items = items.filter((it) => it.status !== 'done');
     if (!items.length) { dbg('batch: all ' + pre.length + ' already decoded'); return pre.length; }
-    if (directReady && opts.direct !== false) {
+    if (directReady && opts.direct === true) {
       try { return pre.length + await runBatchDirect(items, opts); }
       catch (e) { dbg('direct search failed (' + (e && e.message) + '): this batch goes through the page filters'); directReady = false; try { document.dispatchEvent(new CustomEvent('feexport:forget')); } catch (x) { /* ignore */ } }
     }
@@ -706,7 +706,7 @@
     chipStats = { n: 0, ms: 0, enter: 0, suggest: 0, fail: 0, open: 0 };
     let hitsAtStart = rateLimitHits;
     const tB = Date.now(); const rB = responsesSeen;
-    tellNames(items.map(cleanName), Array.from(new Set(items.map((i) => i.company).filter(Boolean))));
+    if (opts.direct === true) tellNames(items.map(cleanName), Array.from(new Set(items.map((i) => i.company).filter(Boolean))));
     await clearAllFilters();
     if (!pageSizeSet && rowEls().length) await setPageSize(200);
     if (opts.exact !== false && !exactSet) { exactSet = await setExactMatch('Person Name', true); }
@@ -809,7 +809,7 @@
       const hitsBefore = rateLimitHits;
       setPhase('One by one · ' + it.name);
       try {
-        if (directReady && opts.direct !== false) {
+        if (directReady && opts.direct === true) {
           let d = null;
           try { d = await searchOneDirect(it); } catch (e) { dbg('direct one-by-one failed for ' + it.name + ' (' + (e && e.message) + '): page filters from here'); directReady = false; try { document.dispatchEvent(new CustomEvent('feexport:forget')); } catch (x) { /* ignore */ } }
           if (d) {
