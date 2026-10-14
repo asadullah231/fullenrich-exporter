@@ -96,7 +96,7 @@ async function ping() {
     const i = r.info;
     if (!i.onSearch) { setStatus(statusEl, 'Go to Search → People', 'error'); return false; }
     onSearchPage = true; queueLive = !!r.queueRunning;
-    setStatus(statusEl, 'Ready' + (i.rows ? ' · ' + i.rows + ' rows' : '') + (i.counter ? ' · ' + i.counter.replace(/ people$/, '') : '') + (r.contacts ? ' · ' + r.contacts + ' profiles' : '') + (r.queueRunning ? ' · running' : ''), 'success');
+    setStatus(statusEl, 'Ready' + (i.rows ? ' · ' + i.rows + ' rows' : '') + (i.counter ? ' · ' + i.counter.replace(/ people$/, '') : '') + (r.contacts ? ' · ' + r.contacts + ' profiles' : '') + (r.queueRunning ? (r.direct ? ' · running, background ok' : ' · running, keep this tab in front for the first batch') : ''), 'success');
     return true;
   } catch (e) { setStatus(statusEl, 'Reload the FullEnrich tab', 'error'); return false; }
 }

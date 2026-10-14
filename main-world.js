@@ -8,7 +8,20 @@
 // the page (the side panel opens with no further request). Decoded contacts go to
 // content.js as JSON ('feexport:contacts'); the raw bytes of the last few calls go
 // along too for the debug file ('feexport:capture'). Nothing is sent anywhere, no
-// request is changed or repeated, no credits are involved.
+// credits are involved.
+//
+// Direct search (v0.9.0): once the page has made one search with the list's names
+// (the first batch goes through the filters as before), that request is kept in memory
+// as a template: same URL, same headers, same session, same page size. Later batches
+// only swap the names in it and send it from here with the page's own fetch, paced
+// like a person clicking. No filter UI is touched, so the run keeps going while the
+// FullEnrich tab is in the background (Chrome stops a hidden tab's rendering and
+// timers; it does not stop its network calls). The template never leaves the page:
+// it is not written to storage.
+//
+// Request layout (captures of 09 Oct 2026): { 2: pageSize, 11: repeated nameFilter { 1 name, 2 flag, 3 flag }, 21: workspace id }.
+// The name field is found from the names the content script says it typed, so a
+// renumbered field still works; 11 is only the fallback.
 //
 // Response layout (worked out from captures on 09 Oct 2026 with a generic protobuf walk):
 //   grpc-web stream, one frame per contact: { 1: contact, 2: totalCount }
@@ -96,21 +109,105 @@
     return { contacts, total, trailer, errors };
   };
 
+  // ---- protobuf writer + top-level splitter (for the request template) ----
+  const encVarint = (n) => { const out = []; n = Math.max(0, Math.floor(Number(n) || 0)); do { let b = n % 128; n = Math.floor(n / 128); if (n > 0) b |= 0x80; out.push(b); } while (n > 0); return out; };
+  const encTag = (f, wt) => encVarint(f * 8 + wt);
+  const encBytesField = (f, bytes) => encTag(f, 2).concat(encVarint(bytes.length), Array.from(bytes));
+  const encStrField = (f, str) => encBytesField(f, new TextEncoder().encode(str));
+  const splitTop = (b) => {
+    const out = []; let i = 0;
+    while (i < b.length) {
+      const start = i; let k; [k, i] = readVarint(b, i); const f = Math.floor(k / 8), wt = k & 7; let v;
+      if (wt === 0) { [v, i] = readVarint(b, i); }
+      else if (wt === 1) { v = b.subarray(i, i + 8); i += 8; }
+      else if (wt === 5) { v = b.subarray(i, i + 4); i += 4; }
+      else if (wt === 2) { let n; [n, i] = readVarint(b, i); v = b.subarray(i, i + n); i += n; }
+      else throw new Error('bad wire type ' + wt + ' at ' + i);
+      if (i > b.length) throw new Error('truncated');
+      out.push({ f, wt, v, start, end: i });
+    }
+    return out;
+  };
+  const concat = (parts) => { let n = 0; for (const p of parts) n += p.length; const out = new Uint8Array(n); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out; };
+  const frame = (payload) => concat([Uint8Array.from([0, (payload.length >>> 24) & 255, (payload.length >>> 16) & 255, (payload.length >>> 8) & 255, payload.length & 255]), payload]);
+  const unframe = (b) => { if (b.length < 5 || b[0] !== 0) return null; const n = new DataView(b.buffer, b.byteOffset + 1, 4).getUint32(0, false); return b.subarray(5, 5 + n); };
+
+  // ---- the template ----
+  let tmpl = null;                       // { url, init, payload, nameField, companyField, restExact, at }
+  let recent = { names: [], companies: [] }; // what the content script typed last (lower-cased)
+  const lower = (x) => String(x || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  document.addEventListener('feexport:names', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { return; } recent = { names: (p.names || []).map(lower), companies: (p.companies || []).map(lower) }; });
+  const headersOf = (input, init) => { const out = {}; try { const h = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined)); h.forEach((v, k) => { out[k] = v; }); } catch (e) { /* ignore */ } return out; };
+  const learnTemplate = (url, input, init, reqBytes) => {
+    if (!recent.names.length) return;
+    const payload = unframe(reqBytes); if (!payload || !payload.length) return;
+    let entries; try { entries = splitTop(payload); } catch (e) { return; }
+    let nameField = 0, companyField = 0, restExact = null;
+    for (const e of entries) {
+      if (e.wt !== 2) continue;
+      let sub; try { sub = splitTop(e.v); } catch (x) { continue; }
+      const first = sub.find((q) => q.f === 1 && q.wt === 2); if (!first) continue;
+      let text = ''; try { text = lower(TD.decode(first.v)); } catch (x) { continue; }
+      if (!nameField && recent.names.includes(text)) { nameField = e.f; restExact = concat(sub.filter((q) => q.f !== 1).map((q) => e.v.subarray(q.start, q.end))); }
+      else if (!companyField && recent.companies.includes(text)) companyField = e.f;
+    }
+    if (!nameField) return;
+    const init2 = {};
+    for (const k of ['method', 'mode', 'credentials', 'cache', 'redirect', 'referrer', 'referrerPolicy', 'keepalive']) { const v = init && init[k] !== undefined ? init[k] : (input instanceof Request ? input[k] : undefined); if (v !== undefined) init2[k] = v; }
+    init2.method = init2.method || 'POST';
+    init2.headers = headersOf(input, init);
+    tmpl = { url, init: init2, payload, nameField, companyField, restExact, at: Date.now() };
+    const page = entries.find((e) => e.f === 2 && e.wt === 0);
+    emit('feexport:template', { ok: true, nameField, companyField, pageSize: page ? page.v : null, exactBytes: restExact ? restExact.length : 0 });
+  };
+  const PAGE_FIELD = 2, PAGE_SIZE = 200;
+  const buildBody = (names, exact) => {
+    const parts = []; let inserted = false;
+    const restPlain = tmpl.restExact ? concat(splitTop(tmpl.restExact).map((q) => (q.wt === 0 ? Uint8Array.from(encTag(q.f, 0).concat(encVarint(0))) : tmpl.restExact.subarray(q.start, q.end)))) : new Uint8Array(0);
+    const nameEntry = (n) => { const body = concat([Uint8Array.from(encStrField(1, n)), exact ? tmpl.restExact : restPlain]); return Uint8Array.from(encBytesField(tmpl.nameField, body)); };
+    for (const e of splitTop(tmpl.payload)) {
+      if (e.f === tmpl.nameField) { if (!inserted) { names.forEach((n) => parts.push(nameEntry(n))); inserted = true; } continue; }
+      if (tmpl.companyField && e.f === tmpl.companyField) continue;
+      if (e.f === PAGE_FIELD && e.wt === 0) { parts.push(Uint8Array.from(encTag(PAGE_FIELD, 0).concat(encVarint(Math.max(e.v, PAGE_SIZE))))); continue; }
+      parts.push(tmpl.payload.subarray(e.start, e.end));
+    }
+    if (!inserted) names.forEach((n) => parts.push(nameEntry(n)));
+    return frame(concat(parts));
+  };
+  // one response, whoever sent the request: decode, tell the content script, keep the raw bytes for the debug file
+  const afterResponse = async (url, reqBytes, res, direct) => {
+    const resBuf = await res.clone().arrayBuffer();
+    const parsed = parseResponse(resBuf);
+    const gm = res.headers.get('grpc-message') || '';
+    const tr = typeof parsed.trailer === 'string' ? parsed.trailer : JSON.stringify(parsed.trailer || '');
+    const limited = res.status === 429 || /rate ?limit/i.test(gm) || /rate ?limit/i.test(tr);
+    if (limited) emit('feexport:ratelimit', { at: new Date().toISOString(), status: res.status, message: gm || tr.slice(0, 200) });
+    emit('feexport:contacts', { at: new Date().toISOString(), total: parsed.total, errors: parsed.errors, contacts: parsed.contacts });
+    emit('feexport:capture', { at: new Date().toISOString(), url, direct: !!direct, status: res.status, resContentType: res.headers.get('content-type') || '', reqB64: toB64(reqBytes), resB64: toB64(resBuf), resBytes: resBuf.byteLength, decoded: parsed.contacts.length, decodeErrors: parsed.errors });
+    return { status: res.status, total: parsed.total, count: parsed.contacts.length, limited, message: gm || (tr.match(/grpc-message:\s*([^\r\n]*)/i) || [])[1] || '', grpcStatus: (tr.match(/grpc-status:\s*(\d+)/i) || [])[1] || '' };
+  };
+  document.addEventListener('feexport:search', async (ev) => {
+    let p = null; try { p = JSON.parse(ev.detail); } catch (e) { return; }
+    const id = p.id;
+    if (!tmpl) { emit('feexport:searchresult', { id, ok: false, error: 'no template yet' }); return; }
+    try {
+      const body = buildBody((p.names || []).map((n) => String(n).replace(/\s+/g, ' ').trim()).filter(Boolean), p.exact !== false);
+      const res = await origFetch(tmpl.url, Object.assign({}, tmpl.init, { body }));
+      const r = await afterResponse(tmpl.url, body, res, true);
+      emit('feexport:searchresult', Object.assign({ id, ok: res.ok && !r.limited && !(r.grpcStatus && r.grpcStatus !== '0'), pageSize: PAGE_SIZE }, r));
+    } catch (e) { emit('feexport:searchresult', { id, ok: false, error: String(e && e.message || e) }); }
+  });
+  document.addEventListener('feexport:forget', () => { tmpl = null; emit('feexport:template', { ok: false }); });
+
   const origFetch = window.fetch;
   window.fetch = async function (input, init) {
     const url = typeof input === 'string' ? input : (input && input.url) || '';
     const res = await origFetch.apply(this, arguments);
     if (WATCH.test(url)) {
       try {
-        const reqBytes = await bodyToBytes(init && init.body);
-        const resBuf = await res.clone().arrayBuffer();
-        const parsed = parseResponse(resBuf);
-        // FullEnrich answers a too-fast search with 429 or a grpc error ("Rate limit exceeded for search"); tell the content script so it backs off
-        const gm = res.headers.get('grpc-message') || '';
-        const tr = typeof parsed.trailer === 'string' ? parsed.trailer : JSON.stringify(parsed.trailer || '');
-        if (res.status === 429 || /rate ?limit/i.test(gm) || /rate ?limit/i.test(tr)) emit('feexport:ratelimit', { at: new Date().toISOString(), status: res.status, message: gm || tr.slice(0, 200) });
-        emit('feexport:contacts', { at: new Date().toISOString(), total: parsed.total, errors: parsed.errors, contacts: parsed.contacts });
-        emit('feexport:capture', { at: new Date().toISOString(), url, status: res.status, resContentType: res.headers.get('content-type') || '', reqB64: toB64(reqBytes), resB64: toB64(resBuf), resBytes: resBuf.byteLength, decoded: parsed.contacts.length, decodeErrors: parsed.errors });
+        const reqBytes = await bodyToBytes(init && init.body !== undefined ? init.body : (input instanceof Request ? await input.clone().arrayBuffer() : null));
+        if (res.ok) learnTemplate(url, input, init, reqBytes);
+        await afterResponse(url, reqBytes, res, false);
       } catch (e) { emit('feexport:capture', { at: new Date().toISOString(), url, error: String(e && e.message || e) }); }
     }
     return res;

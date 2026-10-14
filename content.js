@@ -68,6 +68,23 @@
   const GAP_MIN = 400, GAP_MAX = 2000;
   const noteRateLimit = (src) => { rateLimitHits++; rateLimitedAt = Date.now(); dbg('RATE LIMIT (' + src + '), hit #' + rateLimitHits); setPhase('FullEnrich rate limit (hit ' + rateLimitHits + ')'); };
   document.addEventListener('feexport:ratelimit', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { p = {}; } noteRateLimit('response ' + (p.status || '') + ' ' + (p.message || '')); });
+  // ---- direct search: main-world.js replays the page's own search request with other names (see the note there) ----
+  let directReady = false, directInfo = null, lastDirectAt = 0, directGap = 1500, searchSeq = 0;
+  const searchWaiters = new Map();
+  document.addEventListener('feexport:template', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { return; } directReady = !!p.ok; directInfo = p; dbg(p.ok ? 'direct search ready (name field ' + p.nameField + (p.companyField ? ', company field ' + p.companyField : '') + ', page size ' + p.pageSize + ', exact flag bytes ' + p.exactBytes + ')' : 'direct search template dropped'); });
+  document.addEventListener('feexport:searchresult', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { return; } const w = searchWaiters.get(p.id); if (w) { searchWaiters.delete(p.id); w(p); } });
+  const tellNames = (names, companies) => { try { document.dispatchEvent(new CustomEvent('feexport:names', { detail: JSON.stringify({ names: names || [], companies: companies || [] }) })); } catch (e) { /* ignore */ } };
+  // one search, paced like a person: at most one every directGap ms; resolves with the decoded result or { ok:false, error }
+  const directSearch = async (names, exact) => {
+    const wait = directGap - (Date.now() - lastDirectAt); if (wait > 0) await sleep(wait);
+    const id = ++searchSeq; lastDirectAt = Date.now(); lastRequestAt = Date.now();
+    const result = new Promise((resolve) => searchWaiters.set(id, resolve));
+    try { document.dispatchEvent(new CustomEvent('feexport:search', { detail: JSON.stringify({ id, names, exact: exact !== false }) })); } catch (e) { searchWaiters.delete(id); return { ok: false, error: String(e && e.message || e) }; }
+    const r = await Promise.race([result, sleep(45000).then(() => ({ ok: false, error: 'timeout' }))]);
+    searchWaiters.delete(id);
+    return r;
+  };
+  document.addEventListener('visibilitychange', () => dbg('tab ' + document.visibilityState + (queueRunning ? ' while running' : '')));
   new MutationObserver((muts) => {
     for (const m of muts) for (const n of m.addedNodes) {
       if (n.nodeType === 1 && /rate limit exceeded/i.test(n.textContent || '') && (n.textContent || '').length < 300 && Date.now() - rateLimitedAt > 2000) { noteRateLimit('toast'); return; }
@@ -138,7 +155,7 @@
     const p = ensurePill(); const k = pillCounts(q);
     const state = queueRunning ? 'Running' : (q.state === 'finished' ? 'Finished' : (k.done || k.nf ? 'Paused' : 'Ready'));
     p.dot.className = 'dot ' + (queueRunning ? 'run' : (q.state === 'finished' ? 'done' : (rateLimitHits && queueRunning ? 'warn' : '')));
-    p.t.innerHTML = '<b>FE Export</b> ' + state + ' · ' + k.done + ' found' + (k.nf ? ' · ' + k.nf + ' missing' : '') + (k.pend ? ' · ' + k.pend + ' left' : '') + ' / ' + k.n + (queueRunning && phaseLast ? '<span class="sub">' + phaseLast.replace(/</g, '&lt;') + '</span>' : '');
+    p.t.innerHTML = '<b>FE Export</b> ' + state + (queueRunning && directReady ? ' (background ok)' : '') + ' · ' + k.done + ' found' + (k.nf ? ' · ' + k.nf + ' missing' : '') + (k.pend ? ' · ' + k.pend + ' left' : '') + ' / ' + k.n + (queueRunning && phaseLast ? '<span class="sub">' + phaseLast.replace(/</g, '&lt;') + '</span>' : '');
     p.act.hidden = !(queueRunning || (k.pend && lastOpts));
     p.act.textContent = queueRunning ? 'Pause' : 'Resume';
   };
@@ -630,16 +647,66 @@
   let exactSet = false;
   // the name as FullEnrich stores it: no titles, no suffixes, no brackets (Exact match would otherwise miss "Astha Gupta, PhD, PMP")
   const cleanName = (it) => { const names = searchNames(it); return names[1] || names[0] || it.name; };
+  // ---- batch without the filter UI: one request per batch; a page that overflows is split in halves ----
+  let batchSettled = false; // true when the last batch ended with a clean response (the queue loop must not treat earlier limit hits as "still limited")
+  const runBatchDirect = async (items, opts, depth) => {
+    depth = depth || 0;
+    const label = opts._label || 'Batch';
+    const names = items.map(cleanName);
+    const tB = Date.now();
+    let r = null;
+    for (let attempt = 0; attempt < 4 && !cancelled; attempt++) {
+      setPhase(label + ' · searching ' + names.length + ' names' + (attempt ? ' (retry ' + attempt + ')' : ''));
+      r = await directSearch(names, opts.exact !== false);
+      if (r.ok) break;
+      if (r.limited) { directGap = Math.min(4000, directGap + 500); await pause(15000 + 15000 * attempt, 'Rate limited, waiting'); continue; }
+      if (r.error === 'timeout') { dbg('direct search: no answer in 45 s, retrying'); continue; }
+      throw new Error((r.status ? 'HTTP ' + r.status + ' ' : '') + (r.message || r.error || 'search failed') + (r.grpcStatus ? ' (grpc ' + r.grpcStatus + ')' : ''));
+    }
+    if (cancelled) return 0;
+    if (!r || !r.ok) throw new Error('search did not succeed after retries');
+    let matched = 0;
+    for (const it of items) { if (finishItem(it, null, 'direct')) { matched++; it.ms = 0; } }
+    const missing = items.filter((it) => it.status !== 'done');
+    const overflow = r.total !== null && r.total > (r.count || 0) && r.count >= (r.pageSize || 200) - 1;
+    dbg('direct batch of ' + items.length + ': total ' + r.total + ', ' + r.count + ' rows, matched ' + matched + ', ' + (Date.now() - tB) + ' ms' + (overflow ? ', page overflow' : ''));
+    if (missing.length && overflow && items.length > 1 && depth < 3) {
+      const half = Math.ceil(missing.length / 2);
+      matched += await runBatchDirect(missing.slice(0, half), opts, depth + 1);
+      if (missing.length > half && !cancelled) matched += await runBatchDirect(missing.slice(half), opts, depth + 1);
+    }
+    if (!depth) batchSettled = true;
+    return matched;
+  };
+  // one person without the filter UI: each name variant once, exact match off (the variants differ in form, not identity)
+  const searchOneDirect = async (cand) => {
+    const names = searchNames(cand);
+    for (let ni = 0; ni < names.length && !cancelled; ni++) {
+      let r = await directSearch([names[ni]], false);
+      if (r.limited) { await pause(20000, 'Rate limited, waiting'); r = await directSearch([names[ni]], false); }
+      if (!r.ok) throw new Error((r.status ? 'HTTP ' + r.status + ' ' : '') + (r.message || r.error || 'search failed'));
+      if (contactFor(cand.linkedinUrl)) return { ok: true, nameUsed: names[ni], rows: r.count };
+      if (ni < names.length - 1) dbg('"' + names[ni] + '" gave no match (' + r.count + ' of ' + r.total + ' rows), trying "' + names[ni + 1] + '"');
+      else return { ok: true, nameUsed: names[ni], rows: r.count, total: r.total };
+    }
+    return { ok: false, reason: 'no usable name' };
+  };
   const runBatch = async (items, opts) => {
     // people already decoded from an earlier response need no search at all
     const pre = items.filter((it) => contactFor(it.linkedinUrl));
     for (const it of pre) { finishItem(it, null, 'cached'); it.ms = 0; }
     items = items.filter((it) => it.status !== 'done');
     if (!items.length) { dbg('batch: all ' + pre.length + ' already decoded'); return pre.length; }
+    if (directReady && opts.direct !== false) {
+      try { return pre.length + await runBatchDirect(items, opts); }
+      catch (e) { dbg('direct search failed (' + (e && e.message) + '): this batch goes through the page filters'); directReady = false; try { document.dispatchEvent(new CustomEvent('feexport:forget')); } catch (x) { /* ignore */ } }
+    }
+    if (document.visibilityState === 'hidden') dbg('note: page-filter batch while the tab is hidden; this is slow until the direct template exists');
     const sig = tableSignature();
     chipStats = { n: 0, ms: 0, enter: 0, suggest: 0, fail: 0, open: 0 };
     let hitsAtStart = rateLimitHits;
     const tB = Date.now(); const rB = responsesSeen;
+    tellNames(items.map(cleanName), Array.from(new Set(items.map((i) => i.company).filter(Boolean))));
     await clearAllFilters();
     if (!pageSizeSet && rowEls().length) await setPageSize(200);
     if (opts.exact !== false && !exactSet) { exactSet = await setExactMatch('Person Name', true); }
@@ -712,9 +779,9 @@
         const t0 = Date.now();
         const label = 'Batch ' + (Math.floor(i / batchSize) + 1) + '/' + Math.ceil(pend.length / batchSize);
         for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
-          const hitsBefore = rateLimitHits;
+          const hitsBefore = rateLimitHits; batchSettled = false;
           try { await runBatch(items, Object.assign({}, opts, { _label: label })); } catch (e) { dbg('batch error: ' + (e && e.message)); setPhase(label + ' · error: ' + (e && e.message)); }
-          if (rateLimitHits === hitsBefore) { cleanBatches++; if (cleanBatches >= 4 && chipGap > GAP_MIN) { chipGap = Math.max(GAP_MIN, chipGap - 100); cleanBatches = 0; dbg('4 clean batches: chip gap down to ' + chipGap + ' ms'); } break; }
+          if (rateLimitHits === hitsBefore || batchSettled) { cleanBatches++; if (cleanBatches >= 4 && chipGap > GAP_MIN) { chipGap = Math.max(GAP_MIN, chipGap - 100); cleanBatches = 0; dbg('4 clean batches: chip gap down to ' + chipGap + ' ms'); } break; }
           if (items.every((it) => it.status === 'done' || contactFor(it.linkedinUrl))) break; // limited, but the nudge recovered it
           // FullEnrich limited this batch and the nudge did not recover it: slow down and redo the people still open
           cleanBatches = 0;
@@ -742,6 +809,20 @@
       const hitsBefore = rateLimitHits;
       setPhase('One by one · ' + it.name);
       try {
+        if (directReady && opts.direct !== false) {
+          let d = null;
+          try { d = await searchOneDirect(it); } catch (e) { dbg('direct one-by-one failed for ' + it.name + ' (' + (e && e.message) + '): page filters from here'); directReady = false; try { document.dispatchEvent(new CustomEvent('feexport:forget')); } catch (x) { /* ignore */ } }
+          if (d) {
+            if (!d.ok) { it.status = 'error'; it.note = d.reason; }
+            else if (finishItem(it, null, 'direct')) { if (d.nameUsed && d.nameUsed !== it.name) it.note = 'found as "' + d.nameUsed + '"'; }
+            else { it.status = 'not_found'; it.note = 'no matching person among ' + d.rows + (d.total && d.total > d.rows ? ' of ' + d.total : '') + ' results for "' + d.nameUsed + '"'; }
+            it.ms = Date.now() - t0;
+            q.cursor = idx + 1; q.updatedAt = new Date().toISOString();
+            await saveQueue(q);
+            await sleep(opts.delayMs || 500);
+            continue;
+          }
+        }
         const s = await searchCandidate(it);
         if (rateLimitHits > hitsBefore && !it._rl) {
           it._rl = true; it.status = 'pending'; it.note = '';
@@ -782,7 +863,7 @@
 
   try { chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && ch.queue) renderPill().catch(() => {}); }); } catch (e) { /* ignore */ }
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.type === 'ping') { sendResponse({ ok: true, info: pageInfo(), url: location.href, queueRunning, contacts: contactsBySlug.size }); return; }
+    if (msg.type === 'ping') { sendResponse({ ok: true, info: pageInfo(), url: location.href, queueRunning, contacts: contactsBySlug.size, direct: directReady }); return; }
     if (msg.type === 'cancel') { cancelled = true; sendResponse({ ok: true }); return; }
     if (msg.type === 'log') { chrome.storage.local.get({ logTail: [] }, (st) => { const prev = (st.logTail || []).filter((l) => !log.includes(l)); sendResponse({ log: prev.concat(log) }); }); return true; }
     if (msg.type === 'dumpFilters') { const b = filterButton('Person Name'); dumped.manual = false; dumpOnce('manual', b ? filterRoot(b) : null, 'manual'); sendResponse({ ok: true }); return; }
