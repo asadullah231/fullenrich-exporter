@@ -71,7 +71,7 @@
   // ---- direct search: main-world.js replays the page's own search request with other names (see the note there) ----
   let directReady = false, directInfo = null, lastDirectAt = 0, directGap = 1500, searchSeq = 0;
   const searchWaiters = new Map();
-  document.addEventListener('feexport:template', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { return; } directReady = !!p.ok; directInfo = p; dbg(p.ok ? 'direct search ready (name field ' + p.nameField + (p.companyField ? ', company field ' + p.companyField : '') + ', page size ' + p.pageSize + ', exact flag bytes ' + p.exactBytes + ')' : 'direct search template dropped'); });
+  document.addEventListener('feexport:template', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { return; } const same = directInfo && JSON.stringify(directInfo) === JSON.stringify(p); directReady = !!p.ok; directInfo = p; if (!same) dbg(p.ok ? 'direct search ready (name field ' + p.nameField + (p.companyField ? ', company field ' + p.companyField : '') + ', page size ' + p.pageSize + ', exact flag bytes ' + p.exactBytes + ')' : 'direct search template dropped'); });
   document.addEventListener('feexport:searchresult', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { return; } const w = searchWaiters.get(p.id); if (w) { searchWaiters.delete(p.id); w(p); } });
   const tellNames = (names, companies) => { try { document.dispatchEvent(new CustomEvent('feexport:names', { detail: JSON.stringify({ names: names || [], companies: companies || [] }) })); } catch (e) { /* ignore */ } };
   // one search, paced like a person: at most one every directGap ms; resolves with the decoded result or { ok:false, error }
@@ -767,8 +767,9 @@
     q.state = 'running'; q.startedAt = q.startedAt || new Date().toISOString(); await saveQueue(q);
     const runT0 = Date.now(); exactSet = false;
     setPhase('Starting');
+    if (!opts._onlyErrors && !opts.retryNotFound && !q.items.some((it) => it.status === 'pending') && q.items.some((it) => it.status === 'not_found' || it.status === 'error')) { opts = Object.assign({}, opts, { retryNotFound: true }); dbg('nothing pending: this start retries the not found / error people'); }
     const todo = (it) => opts._onlyErrors ? it.status === 'error' : (it.status === 'pending' || (opts.retryNotFound && (it.status === 'not_found' || it.status === 'error')));
-    dbg('queue start: ' + q.items.length + ' items, to do ' + q.items.filter(todo).length + ', batch size ' + (opts.batchSize || 0));
+    dbg('queue start: ' + q.items.length + ' items, to do ' + q.items.filter(todo).length + ', batch size ' + (opts.batchSize || 0) + ', background ' + (opts.direct === true ? 'on' : 'off') + ', panels ' + (opts.panels === false ? 'off' : 'on') + ', pause ' + (opts.delayMs || 500) + ' ms');
     const batchSize = Math.max(0, Number(opts.batchSize) || 0);
     if (batchSize > 1) { const ok = await setPageSize(200); if (!ok) dbg('page size stays at 50; batches still run, misses go to the one-by-one pass'); }
     // pass 1: batches
