@@ -142,36 +142,44 @@
     if (!recent.names.length) return;
     const payload = unframe(reqBytes); if (!payload || !payload.length) return;
     let entries; try { entries = splitTop(payload); } catch (e) { return; }
-    let nameField = 0, companyField = 0, restExact = null;
+    let nameField = 0, companyField = 0, restExact = null, restCompany = null;
     for (const e of entries) {
       if (e.wt !== 2) continue;
       let sub; try { sub = splitTop(e.v); } catch (x) { continue; }
       const first = sub.find((q) => q.f === 1 && q.wt === 2); if (!first) continue;
       let text = ''; try { text = lower(TD.decode(first.v)); } catch (x) { continue; }
       if (!nameField && recent.names.includes(text)) { nameField = e.f; restExact = concat(sub.filter((q) => q.f !== 1).map((q) => e.v.subarray(q.start, q.end))); }
-      else if (!companyField && recent.companies.includes(text)) companyField = e.f;
+      else if (!companyField && recent.companies.includes(text)) { companyField = e.f; restCompany = concat(sub.filter((q) => q.f !== 1).map((q) => e.v.subarray(q.start, q.end))); }
     }
     if (!nameField) return;
     const init2 = {};
     for (const k of ['method', 'mode', 'credentials', 'cache', 'redirect', 'referrer', 'referrerPolicy', 'keepalive']) { const v = init && init[k] !== undefined ? init[k] : (input instanceof Request ? input[k] : undefined); if (v !== undefined) init2[k] = v; }
     init2.method = init2.method || 'POST';
     init2.headers = headersOf(input, init);
-    tmpl = { url, init: init2, payload, nameField, companyField, restExact, at: Date.now() };
+    // the company field is only seen when the first batch had to add company chips; otherwise keep what an earlier
+    // template taught, else the field number from the 15 Oct 2026 captures (12, same {1 name, 2, 3} shape as names)
+    if (!companyField && tmpl && tmpl.companyField) { companyField = tmpl.companyField; restCompany = tmpl.restCompany; }
+    if (!companyField) { companyField = 12; restCompany = null; }
+    tmpl = { url, init: init2, payload, nameField, companyField, restExact, restCompany, at: Date.now() };
     const page = entries.find((e) => e.f === 2 && e.wt === 0);
     emit('feexport:template', { ok: true, nameField, companyField, pageSize: page ? page.v : null, exactBytes: restExact ? restExact.length : 0 });
   };
   const PAGE_FIELD = 2, PAGE_SIZE = 200;
-  const buildBody = (names, exact) => {
+  const buildBody = (names, exact, companies) => {
     const parts = []; let inserted = false;
+    companies = (companies || []).filter(Boolean);
     const restPlain = tmpl.restExact ? concat(splitTop(tmpl.restExact).map((q) => (q.wt === 0 ? Uint8Array.from(encTag(q.f, 0).concat(encVarint(0))) : tmpl.restExact.subarray(q.start, q.end)))) : new Uint8Array(0);
     const nameEntry = (n) => { const body = concat([Uint8Array.from(encStrField(1, n)), exact ? tmpl.restExact : restPlain]); return Uint8Array.from(encBytesField(tmpl.nameField, body)); };
+    // company entries: never exact (the CSV spelling rarely equals FullEnrich's), so flags stay zero
+    const restCo = tmpl.restCompany ? concat(splitTop(tmpl.restCompany).map((q) => (q.wt === 0 ? Uint8Array.from(encTag(q.f, 0).concat(encVarint(0))) : tmpl.restCompany.subarray(q.start, q.end)))) : restPlain;
+    const companyEntry = (c) => Uint8Array.from(encBytesField(tmpl.companyField, concat([Uint8Array.from(encStrField(1, c)), restCo])));
     for (const e of splitTop(tmpl.payload)) {
-      if (e.f === tmpl.nameField) { if (!inserted) { names.forEach((n) => parts.push(nameEntry(n))); inserted = true; } continue; }
+      if (e.f === tmpl.nameField) { if (!inserted) { names.forEach((n) => parts.push(nameEntry(n))); companies.forEach((c) => parts.push(companyEntry(c))); inserted = true; } continue; }
       if (tmpl.companyField && e.f === tmpl.companyField) continue;
       if (e.f === PAGE_FIELD && e.wt === 0) { parts.push(Uint8Array.from(encTag(PAGE_FIELD, 0).concat(encVarint(Math.max(e.v, PAGE_SIZE))))); continue; }
       parts.push(tmpl.payload.subarray(e.start, e.end));
     }
-    if (!inserted) names.forEach((n) => parts.push(nameEntry(n)));
+    if (!inserted) { names.forEach((n) => parts.push(nameEntry(n))); companies.forEach((c) => parts.push(companyEntry(c))); }
     return frame(concat(parts));
   };
   // one response, whoever sent the request: decode, tell the content script, keep the raw bytes for the debug file
@@ -191,7 +199,7 @@
     const id = p.id;
     if (!tmpl) { emit('feexport:searchresult', { id, ok: false, error: 'no template yet' }); return; }
     try {
-      const body = buildBody((p.names || []).map((n) => String(n).replace(/\s+/g, ' ').trim()).filter(Boolean), p.exact !== false);
+      const body = buildBody((p.names || []).map((n) => String(n).replace(/\s+/g, ' ').trim()).filter(Boolean), p.exact !== false, (p.companies || []).map((c) => String(c).replace(/\s+/g, ' ').trim()));
       const res = await origFetch(tmpl.url, Object.assign({}, tmpl.init, { body }));
       const r = await afterResponse(tmpl.url, body, res, true);
       emit('feexport:searchresult', Object.assign({ id, ok: res.ok && !r.limited && !(r.grpcStatus && r.grpcStatus !== '0'), pageSize: PAGE_SIZE }, r));

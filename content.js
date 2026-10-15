@@ -69,17 +69,17 @@
   const noteRateLimit = (src) => { rateLimitHits++; rateLimitedAt = Date.now(); dbg('RATE LIMIT (' + src + '), hit #' + rateLimitHits); setPhase('FullEnrich rate limit (hit ' + rateLimitHits + ')'); };
   document.addEventListener('feexport:ratelimit', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { p = {}; } noteRateLimit('response ' + (p.status || '') + ' ' + (p.message || '')); });
   // ---- direct search: main-world.js replays the page's own search request with other names (see the note there) ----
-  let directReady = false, directInfo = null, lastDirectAt = 0, directGap = 1500, searchSeq = 0;
+  let directReady = false, directInfo = null, lastDirectAt = 0, directGap = 1200, searchSeq = 0;
   const searchWaiters = new Map();
   document.addEventListener('feexport:template', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { return; } const same = directInfo && JSON.stringify(directInfo) === JSON.stringify(p); directReady = !!p.ok; directInfo = p; if (!same) dbg(p.ok ? 'direct search ready (name field ' + p.nameField + (p.companyField ? ', company field ' + p.companyField : '') + ', page size ' + p.pageSize + ', exact flag bytes ' + p.exactBytes + ')' : 'direct search template dropped'); });
   document.addEventListener('feexport:searchresult', (ev) => { let p = null; try { p = JSON.parse(ev.detail); } catch (e) { return; } const w = searchWaiters.get(p.id); if (w) { searchWaiters.delete(p.id); w(p); } });
   const tellNames = (names, companies) => { try { document.dispatchEvent(new CustomEvent('feexport:names', { detail: JSON.stringify({ names: names || [], companies: companies || [] }) })); } catch (e) { /* ignore */ } };
   // one search, paced like a person: at most one every directGap ms; resolves with the decoded result or { ok:false, error }
-  const directSearch = async (names, exact) => {
+  const directSearch = async (names, exact, companies) => {
     const wait = directGap - (Date.now() - lastDirectAt); if (wait > 0) await sleep(wait);
     const id = ++searchSeq; lastDirectAt = Date.now(); lastRequestAt = Date.now();
     const result = new Promise((resolve) => searchWaiters.set(id, resolve));
-    try { document.dispatchEvent(new CustomEvent('feexport:search', { detail: JSON.stringify({ id, names, exact: exact !== false }) })); } catch (e) { searchWaiters.delete(id); return { ok: false, error: String(e && e.message || e) }; }
+    try { document.dispatchEvent(new CustomEvent('feexport:search', { detail: JSON.stringify({ id, names, exact: exact !== false, companies: companies || [] }) })); } catch (e) { searchWaiters.delete(id); return { ok: false, error: String(e && e.message || e) }; }
     const r = await Promise.race([result, sleep(45000).then(() => ({ ok: false, error: 'timeout' }))]);
     searchWaiters.delete(id);
     return r;
@@ -638,7 +638,7 @@
 
   // ---- batch: N names + their companies in one search (OR within a filter, AND across filters) ----
   const finishItem = (it, f, source) => {
-    const c = contactFor(it.linkedinUrl);
+    const c = contactFor(it.linkedinUrl) || (it._altSlug ? contactsBySlug.get(it._altSlug) || null : null);
     if (c) { it.status = 'done'; it.matchedBy = source; it.row = f && f.hit ? f.hit.row : rowFromContact(c); it.profile = profileFromContact(c, it.row); it.panelOk = true; it.dataSource = 'search_response'; it.note = ''; return true; }
     return false;
   };
@@ -649,15 +649,16 @@
   const cleanName = (it) => { const names = searchNames(it); return names[1] || names[0] || it.name; };
   // ---- batch without the filter UI: one request per batch; a page that overflows is split in halves ----
   let batchSettled = false; // true when the last batch ended with a clean response (the queue loop must not treat earlier limit hits as "still limited")
-  const runBatchDirect = async (items, opts, depth) => {
+  const runBatchDirect = async (items, opts, depth, withCompanies) => {
     depth = depth || 0;
     const label = opts._label || 'Batch';
     const names = items.map(cleanName);
+    const companies = withCompanies ? Array.from(new Set(items.map((i) => i.company).filter(Boolean))) : [];
     const tB = Date.now();
     let r = null;
     for (let attempt = 0; attempt < 4 && !cancelled; attempt++) {
-      setPhase(label + ' · searching ' + names.length + ' names' + (attempt ? ' (retry ' + attempt + ')' : ''));
-      r = await directSearch(names, opts.exact !== false);
+      setPhase(label + ' · searching ' + names.length + ' names' + (companies.length ? ' + companies' : '') + (attempt ? ' (retry ' + attempt + ')' : ''));
+      r = await directSearch(names, opts.exact !== false, companies);
       if (r.ok) break;
       if (r.limited) { directGap = Math.min(4000, directGap + 500); await pause(15000 + 15000 * attempt, 'Rate limited, waiting'); continue; }
       if (r.error === 'timeout') { dbg('direct search: no answer in 45 s, retrying'); continue; }
@@ -669,11 +670,15 @@
     for (const it of items) { if (finishItem(it, null, 'direct')) { matched++; it.ms = 0; } }
     const missing = items.filter((it) => it.status !== 'done');
     const overflow = r.total !== null && r.total > (r.count || 0) && r.count >= (r.pageSize || 200) - 1;
-    dbg('direct batch of ' + items.length + ': total ' + r.total + ', ' + r.count + ' rows, matched ' + matched + ', ' + (Date.now() - tB) + ' ms' + (overflow ? ', page overflow' : ''));
-    if (missing.length && overflow && items.length > 1 && depth < 3) {
-      const half = Math.ceil(missing.length / 2);
-      matched += await runBatchDirect(missing.slice(0, half), opts, depth + 1);
-      if (missing.length > half && !cancelled) matched += await runBatchDirect(missing.slice(half), opts, depth + 1);
+    dbg('direct batch of ' + items.length + (companies.length ? ' + ' + companies.length + ' companies' : '') + ': total ' + r.total + ', ' + r.count + ' rows, matched ' + matched + ', ' + (Date.now() - tB) + ' ms' + (overflow ? ', page overflow' : ''));
+    if (missing.length && overflow && !cancelled) {
+      // common names flood the page (Jan Schmidt alone = 900 rows): narrow with the companies from the CSV first, split only after that
+      if (!withCompanies && missing.some((i) => i.company)) matched += await runBatchDirect(missing, opts, depth, true);
+      else if (items.length > 1 && depth < 3) {
+        const half = Math.ceil(missing.length / 2);
+        matched += await runBatchDirect(missing.slice(0, half), opts, depth + 1, withCompanies);
+        if (missing.length > half && !cancelled) matched += await runBatchDirect(missing.slice(half), opts, depth + 1, withCompanies);
+      }
     }
     if (!depth) batchSettled = true;
     return matched;
@@ -681,16 +686,32 @@
   // one person without the filter UI: each name variant once, exact match off (the variants differ in form, not identity)
   const searchOneDirect = async (cand) => {
     const names = searchNames(cand);
-    for (let ni = 0; ni < names.length && !cancelled; ni++) {
-      let r = await directSearch([names[ni]], false);
-      if (r.limited) { await pause(20000, 'Rate limited, waiting'); r = await directSearch([names[ni]], false); }
+    const co = String(cand.company || '').trim();
+    // tries in order: each variant with the company (small result, exact person), then the variants alone.
+    // "Felix S." style names (LinkedIn hides the surname) can only be found by first name inside the company.
+    const tries = [];
+    const hidden = /^(\S+)\s+\S\.?$/.exec(String(cand.name || '').trim());
+    if (co) { names.forEach((n) => tries.push({ name: n, company: co })); if (hidden) tries.push({ name: hidden[1], company: co, first: true }); }
+    names.forEach((n) => tries.push({ name: n, company: '' }));
+    let last = null;
+    for (let ti = 0; ti < tries.length && !cancelled; ti++) {
+      const t = tries[ti];
+      let r = await directSearch([t.name], false, t.company ? [t.company] : []);
+      if (r.limited) { await pause(20000, 'Rate limited, waiting'); r = await directSearch([t.name], false, t.company ? [t.company] : []); }
       if (!r.ok) throw new Error((r.status ? 'HTTP ' + r.status + ' ' : '') + (r.message || r.error || 'search failed'));
-      if (contactFor(cand.linkedinUrl)) return { ok: true, nameUsed: names[ni], rows: r.count };
-      if (ni < names.length - 1) dbg('"' + names[ni] + '" gave no match (' + r.count + ' of ' + r.total + ' rows), trying "' + names[ni + 1] + '"');
-      else return { ok: true, nameUsed: names[ni], rows: r.count, total: r.total };
+      last = { ok: true, nameUsed: t.name + (t.company ? ' @ ' + t.company : ''), rows: r.count, total: r.total };
+      if (contactFor(cand.linkedinUrl)) return last;
+      if (t.first && r.count && r.count < 50) {
+        // first name + company gave a short list: take the one row whose first name matches when the CSV surname is only an initial
+        const init = String(cand.name || '').trim().slice(-2).replace('.', '').toLowerCase();
+        const cands = Array.from(contactsBySlug.values()).filter((c) => normName(c.first_name) === normName(t.name) && String(c.last_name || '').toLowerCase().startsWith(init) && c.employment && c.employment.current && normName(c.employment.current.company && c.employment.current.company.name).includes(normName(co).split(' ')[0]));
+        if (cands.length === 1) { cand.linkedinUrl = cand.linkedinUrl || cands[0].social_profiles.professional_network.url; cand._altSlug = (cands[0].social_profiles.professional_network.slug || '').toLowerCase(); if (contactForItem(cand)) return Object.assign(last, { nameUsed: last.nameUsed + ' (first name + initial)' }); }
+      }
+      if (ti < tries.length - 1) dbg('"' + t.name + (t.company ? '" + "' + t.company : '') + '" gave no match (' + r.count + ' of ' + r.total + ' rows), trying "' + tries[ti + 1].name + (tries[ti + 1].company ? '" + "' + tries[ti + 1].company : '') + '"');
     }
-    return { ok: false, reason: 'no usable name' };
+    return last || { ok: false, reason: 'no usable name' };
   };
+  const contactForItem = (it) => contactFor(it.linkedinUrl) || (it._altSlug ? contactsBySlug.get(it._altSlug) || null : null);
   const runBatch = async (items, opts) => {
     // people already decoded from an earlier response need no search at all
     const pre = items.filter((it) => contactFor(it.linkedinUrl));
@@ -777,7 +798,8 @@
     if (!opts._onlyErrors && !opts.retryNotFound && !q.items.some((it) => it.status === 'pending') && q.items.some((it) => it.status === 'not_found' || it.status === 'error')) { opts = Object.assign({}, opts, { retryNotFound: true }); dbg('nothing pending: this start retries the not found / error people'); }
     const todo = (it) => opts._onlyErrors ? it.status === 'error' : (it.status === 'pending' || (opts.retryNotFound && (it.status === 'not_found' || it.status === 'error')));
     dbg('queue start: ' + q.items.length + ' items, to do ' + q.items.filter(todo).length + ', batch size ' + (opts.batchSize || 0) + ', background ' + (opts.direct === true ? 'on' : 'off') + ', panels ' + (opts.panels === false ? 'off' : 'on') + ', pause ' + (opts.delayMs || 500) + ' ms');
-    const batchSize = Math.max(0, Number(opts.batchSize) || 0);
+    let batchSize = Math.max(0, Number(opts.batchSize) || 0);
+    if (batchSize > 1 && opts.retryNotFound && !q.items.some((it) => it.status === 'pending')) { batchSize = 1; dbg('retry of misses: batches skipped, straight to one by one'); }
     if (batchSize > 1) { const ok = await setPageSize(200); if (!ok) dbg('page size stays at 50; batches still run, misses go to the one-by-one pass'); }
     // pass 1: batches
     if (batchSize > 1) {
@@ -822,7 +844,7 @@
           try { d = await searchOneDirect(it); } catch (e) { dbg('direct one-by-one failed for ' + it.name + ': ' + (e && e.message)); d = { ok: false, reason: 'search failed: ' + (e && e.message) }; }
           if (d) {
             if (!d.ok) { it.status = 'error'; it.note = d.reason; }
-            else if (finishItem(it, null, 'direct')) { if (d.nameUsed && d.nameUsed !== it.name) it.note = 'found as "' + d.nameUsed + '"'; }
+            else if (finishItem(it, null, it._altSlug ? 'first_name_company' : 'direct')) { if (d.nameUsed && d.nameUsed !== it.name) it.note = 'found as "' + d.nameUsed + '"' + (it._altSlug ? ' (surname hidden on LinkedIn; matched by first name, initial and company, please check)' : ''); }
             else { it.status = 'not_found'; it.note = 'no matching person among ' + d.rows + (d.total && d.total > d.rows ? ' of ' + d.total : '') + ' results for "' + d.nameUsed + '"'; }
             it.ms = Date.now() - t0;
             q.cursor = idx + 1; q.updatedAt = new Date().toISOString();
