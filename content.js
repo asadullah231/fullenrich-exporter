@@ -133,7 +133,7 @@
     const host = document.createElement('div'); host.id = 'feexport-pill'; host.style.cssText = 'all:initial;position:fixed;left:16px;bottom:16px;z-index:2147483646;';
     const sh = host.attachShadow({ mode: 'open' });
     sh.innerHTML = `<style>
-      .p{font-family:"Inter",-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;font-size:12.5px;line-height:1.3;color:#0A0A0A;background:#FFFFFF;border:1px solid #E5E7EB;border-radius:9999px;box-shadow:0 6px 20px rgba(10,10,10,.12);padding:8px 10px 8px 12px;display:flex;align-items:center;gap:10px;letter-spacing:-0.006em;user-select:none;max-width:460px}
+      .p{font-family:"Inter",-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;font-size:12.5px;line-height:1.3;color:#0A0A0A;background:#FFFFFF;border:1px solid #E5E7EB;border-radius:9999px;box-shadow:0 6px 20px rgba(10,10,10,.12);padding:8px 10px 8px 12px;display:flex;align-items:center;gap:10px;letter-spacing:-0.006em;user-select:none;max-width:620px}
       .dot{width:8px;height:8px;border-radius:50%;background:#9CA3AF;flex:0 0 auto}.dot.run{background:#1CA7FD;box-shadow:0 0 0 4px rgba(28,167,253,.18)}.dot.done{background:#16A34A}.dot.warn{background:#F59E0B}
       .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.t b{font-weight:600}.sub{color:#6B7280;margin-left:6px}
       button{all:unset;cursor:pointer;font:inherit;font-weight:500;color:#148CFC;background:#DEF2FE;border-radius:9999px;padding:4px 10px;flex:0 0 auto}button:hover{background:#BFE6FD}button.x{background:transparent;color:#6B7280;padding:4px 6px}
@@ -699,7 +699,14 @@
     if (!items.length) { dbg('batch: all ' + pre.length + ' already decoded'); return pre.length; }
     if (directReady && opts.direct === true) {
       try { return pre.length + await runBatchDirect(items, opts); }
-      catch (e) { dbg('direct search failed (' + (e && e.message) + '): this batch goes through the page filters'); directReady = false; try { document.dispatchEvent(new CustomEvent('feexport:forget')); } catch (x) { /* ignore */ } }
+      catch (e) {
+        dbg('direct search failed (' + (e && e.message) + '), one more try');
+        try { await pause(5000, 'Search failed, retrying'); return pre.length + await runBatchDirect(items, opts); }
+        catch (e2) {
+          if (document.visibilityState !== 'visible') { dbg('direct search failed again (' + (e2 && e2.message) + '); tab is hidden, so these ' + items.length + ' stay pending'); throw e2; }
+          dbg('direct search failed again (' + (e2 && e2.message) + '): this batch goes through the page filters'); directReady = false; try { document.dispatchEvent(new CustomEvent('feexport:forget')); } catch (x) { /* ignore */ }
+        }
+      }
     }
     if (document.visibilityState === 'hidden') dbg('note: page-filter batch while the tab is hidden; this is slow until the direct template exists');
     const sig = tableSignature();
@@ -812,7 +819,7 @@
       try {
         if (directReady && opts.direct === true) {
           let d = null;
-          try { d = await searchOneDirect(it); } catch (e) { dbg('direct one-by-one failed for ' + it.name + ' (' + (e && e.message) + '): page filters from here'); directReady = false; try { document.dispatchEvent(new CustomEvent('feexport:forget')); } catch (x) { /* ignore */ } }
+          try { d = await searchOneDirect(it); } catch (e) { dbg('direct one-by-one failed for ' + it.name + ': ' + (e && e.message)); d = { ok: false, reason: 'search failed: ' + (e && e.message) }; }
           if (d) {
             if (!d.ok) { it.status = 'error'; it.note = d.reason; }
             else if (finishItem(it, null, 'direct')) { if (d.nameUsed && d.nameUsed !== it.name) it.note = 'found as "' + d.nameUsed + '"'; }
