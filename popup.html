@@ -38,6 +38,8 @@
   .status-line { font-size: 13px; font-weight: 400; white-space: pre-wrap; font-variant-numeric: tabular-nums; letter-spacing: -0.004em; color: var(--text); }
   .status-line.error { color: var(--red); }
   .status-line.success { color: var(--green); }
+  #update a { color: var(--accent-dark); font-weight: 500; text-decoration: none; }
+  #update a:hover { text-decoration: underline; }
   .status-box { background: #FFFFFF; border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; }
   .bar { width: 100%; height: 6px; background: var(--accent-light-2); border-radius: 9999px; overflow: hidden; margin-top: 10px; }
   .bar > div { height: 100%; width: 0%; background: var(--grad); border-radius: 9999px; transition: width 0.6s var(--ease); }
@@ -91,7 +93,7 @@
     <button id="settingsBtn" class="gear" title="Settings" aria-expanded="false" aria-controls="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
   </header>
 
-  <div class="status-box" style="margin-bottom:16px"><div id="status" class="status-line">Checking…</div></div>
+  <div class="status-box" style="margin-bottom:16px"><div id="status" class="status-line">Checking…</div><div id="update" class="status-line" hidden style="margin-top:6px"></div></div>
 
   <section class="card">
     <div class="card-head" title="Enrich a list of LinkedIn profile URLs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h8"/></svg>List</div>

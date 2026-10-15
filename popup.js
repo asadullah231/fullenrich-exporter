@@ -211,5 +211,21 @@ debugBtn.addEventListener('click', async () => {
 clearBtn.addEventListener('click', async () => { await chrome.storage.local.set({ captures: [] }); refreshCaptures(); });
 
 ping().then((ok) => { exportBtn.disabled = !ok; refreshQueue(); });
+// ---- update check: the repo's manifest once a day; newer version -> one line with the download link ----
+const REPO = 'https://github.com/asadullah231/fullenrich-exporter';
+const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d > 0; } return false; };
+(async () => {
+  const el = $('update'); const mine = chrome.runtime.getManifest().version;
+  const show = (v) => { if (!newer(v, mine)) return; el.hidden = false; el.innerHTML = ''; const a = document.createElement('a'); a.href = REPO + '/archive/refs/heads/main.zip'; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Update to v' + v; el.append(a, document.createTextNode(' (you have v' + mine + '). Unzip over the old folder, then reload the extension.')); };
+  try {
+    const st = await chrome.storage.local.get({ updateCheck: null });
+    if (st.updateCheck && Date.now() - st.updateCheck.at < 86400000) { show(st.updateCheck.version); return; }
+    const r = await fetch('https://raw.githubusercontent.com/asadullah231/fullenrich-exporter/main/manifest.json', { cache: 'no-store' });
+    if (!r.ok) return;
+    const m = await r.json(); if (!m || !m.version) return;
+    await chrome.storage.local.set({ updateCheck: { at: Date.now(), version: m.version } });
+    show(m.version);
+  } catch (e) { /* offline or blocked: say nothing */ }
+})();
 refreshCaptures();
 setInterval(() => { if (!document.hidden) refreshQueue(); }, 10000);

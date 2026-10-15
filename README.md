@@ -13,6 +13,7 @@ FullEnrich's web app shows complete candidate and lead profiles in its People se
 - **Exact matching by LinkedIn URL.** The person is found by name and company, then confirmed by the LinkedIn profile link on the row. Wrong-person matches do not happen.
 - **Batch search.** Up to 40 people per search (names and companies combined), then a one-by-one pass for anything missed. A 450-person list takes minutes.
 - **Smart name fallbacks.** Strips titles and suffixes ("Dr.", "PhD", "MBA") and derives a name from the LinkedIn slug when the CSV name does not match.
+- **Background mode.** Turn it on in the popup and the run keeps going while you work in other tabs: after the first batch, the extension reuses the page's own search request with the next names in it (same login, same limits, one request per batch) instead of driving the filter UI. Also the fastest way to run a long list.
 - **Resume-safe.** Progress is saved after every person. Close the popup, come back, pause, resume.
 - **Zero credits.** Only table rows, filter chips and panels are touched. Enrich, Find phone and Find email are never clicked.
 - **Export the current search too.** Any FullEnrich People search, every page, to CSV.
@@ -27,12 +28,17 @@ FullEnrich's web app shows complete candidate and lead profiles in its People se
 
 No build step, no dependencies, no account, no server. Everything runs locally.
 
+### Update
+
+The popup checks this repository once a day and shows **Update to vX.Y.Z** when a newer version exists. Click it, unzip over your existing folder (same path, so Chrome keeps the extension), then press the reload arrow on `chrome://extensions` and reload the FullEnrich tab. Saved lists and progress are kept.
+
 ## Use: list of LinkedIn URLs to full profiles
 
 1. On **Search → People**, click the FE Export icon.
 2. **Choose CSV** and pick your file. It needs a column with LinkedIn profile links (`Profile URL`, `LinkedIn URL`, `LinkedIn Profile URL` or similar). Name and company columns improve matching.
-3. **Start.** The popup shows found, not found, errors and time left. You can close it; the run continues in the tab.
-4. **Export results.** The file is named `<your list> - fullenrich - YYYY-MM-DD.csv`.
+3. **Start.** The popup shows found, not found, errors and time left. You can close it; the run continues in the tab. A status pill at the bottom left of the FullEnrich page shows the same numbers with Pause / Resume.
+4. **Background** (optional, recommended for long lists): tick it before Start. Keep the FullEnrich tab in front for the first batch, until the pill says *background ok*; after that any tab is fine. Without it, Chrome slows the FullEnrich page down whenever its tab is hidden and the run waits.
+5. **Export results.** The file is named `<your list> - fullenrich - YYYY-MM-DD.csv`.
 
 People FullEnrich does not have come back as `not_found` with their original columns intact, so the same file can still feed your next step.
 

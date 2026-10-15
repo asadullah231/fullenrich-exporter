@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FE Export",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Export FullEnrich people search results to CSV with full profiles: job history, role descriptions, company data, skills, languages, education. From a list of LinkedIn URLs. Read only, no credits.",
   "permissions": [
     "activeTab",
@@ -9,7 +9,8 @@
     "unlimitedStorage"
   ],
   "host_permissions": [
-    "https://app.fullenrich.com/*"
+    "https://app.fullenrich.com/*",
+    "https://raw.githubusercontent.com/asadullah231/fullenrich-exporter/*"
   ],
   "icons": {
     "16": "icons/icon16.png",
